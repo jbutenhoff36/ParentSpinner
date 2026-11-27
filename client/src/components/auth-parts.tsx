@@ -215,6 +215,10 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
           <p className="text-sm text-muted-foreground">{APP_TAGLINE}</p>
         </div>
         <div className="w-full max-w-sm">{children}</div>
+        <nav className="mt-10 flex gap-4 text-xs text-muted-foreground" aria-label="Legal">
+          <a href="/privacy" className="hover:text-foreground hover:underline">Privacy</a>
+          <a href="/terms" className="hover:text-foreground hover:underline">Terms</a>
+        </nav>
       </main>
     </div>
   );

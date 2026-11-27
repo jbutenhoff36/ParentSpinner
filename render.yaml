@@ -23,3 +23,6 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      # Optional: contact email shown on the Privacy and Terms pages
+      - key: VITE_SUPPORT_EMAIL
+        sync: false

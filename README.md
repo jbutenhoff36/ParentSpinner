@@ -53,6 +53,7 @@ and updates its tables on start):
 | `PORT` | Usually set by the host |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional. Turns on "Continue with Google" (see below) |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional. Keys for phone notifications. If unset, the app makes a pair and keeps it in the database |
+| `VITE_SUPPORT_EMAIL` | Optional. Contact email shown on /privacy and /terms (used at build time, so redeploy after setting it) |
 | `APP_URL` | Optional. Public address, e.g. `https://spin.example.com`, if Google sign-in builds the wrong return link |
 
 In production, login cookies are HTTPS-only. If you serve over plain HTTP (for example
@@ -71,6 +72,9 @@ The button only appears once both Google settings are filled in.
    **Authorized redirect URIs** add your address followed by `/api/auth/google/callback`, e.g.
    `https://kidspin.onrender.com/api/auth/google/callback`.
    Add one for each address you use (for example a custom domain later).
+   Under **Branding**, use app name KidSpin, the logo from `public/icon-512.png` (or a 120x120 copy),
+   home page `https://<your address>/`, privacy policy `https://<your address>/privacy`,
+   terms `https://<your address>/terms`, and authorized domain `onrender.com` (or your own domain).
 5. Copy the **Client ID** and **Client secret**. In Render, open the web service,
    go to **Environment**, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, and save.
    Render redeploys and the button appears.
