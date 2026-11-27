@@ -15,6 +15,20 @@
       "when": 1795760776308,
       "tag": "0001_join_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795768042850,
+      "tag": "0002_google_sign_in",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795796809206,
+      "tag": "0003_families_and_push",
+      "breakpoints": true
     }
   ]
 }

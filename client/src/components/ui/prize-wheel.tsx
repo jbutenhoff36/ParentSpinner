@@ -56,7 +56,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const update = () => setSize(Math.max(220, Math.min(360, Math.floor(el.clientWidth))));
+    const update = () => setSize(Math.max(220, Math.min(380, Math.floor(el.clientWidth))));
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -89,7 +89,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.lineWidth = 2;
-    ctx.strokeStyle = '#e2e8f0';
+    ctx.strokeStyle = 'rgba(30,27,75,0.08)';
     ctx.stroke();
 
     ctx.save();
@@ -97,7 +97,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     ctx.rotate(rotationRef.current - Math.PI / 2);
 
     const fontSize = n > 14 ? 11 : n > 10 ? 12.5 : 14;
-    ctx.font = `600 ${fontSize}px Nunito, system-ui, sans-serif`;
+    ctx.font = `700 ${fontSize}px "Plus Jakarta Sans Variable", system-ui, sans-serif`;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'right';
     const maxText = r * 0.68;
@@ -141,17 +141,23 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
 
     // Hub
     ctx.beginPath();
-    ctx.arc(c, c, r * 0.13, 0, TWO_PI);
+    ctx.arc(c, c, r * 0.14, 0, TWO_PI);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#cbd5e1';
-    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(c, c, r * 0.06, 0, TWO_PI);
+    ctx.fillStyle = '#6D4AFF';
+    ctx.fill();
   }, [size]);
 
   useEffect(() => {
     draw();
   }, [draw, slices]);
+
+  // Redraw once the web font has loaded so labels use it
+  useEffect(() => {
+    document.fonts?.ready.then(() => draw()).catch(() => {});
+  }, [draw]);
 
   useEffect(() => () => {
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
@@ -227,7 +233,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
   const downRef = useRef<{ x: number; y: number } | null>(null);
 
   return (
-    <div ref={wrapRef} className="relative w-full max-w-[360px] mx-auto select-none">
+    <div ref={wrapRef} className="relative w-full max-w-[380px] mx-auto select-none">
       {/* Fixed pointer at the top */}
       <svg
         className="absolute left-1/2 -translate-x-1/2 -top-1 z-10 drop-shadow"
@@ -236,7 +242,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
         viewBox="0 0 28 34"
         aria-hidden="true"
       >
-        <path d="M14 34 L2 6 Q14 -2 26 6 Z" fill="#1e293b" />
+        <path d="M14 34 L2 6 Q14 -2 26 6 Z" fill="#1E1B4B" stroke="#fff" strokeWidth="1.5" />
         <circle cx="14" cy="10" r="4" fill="#ffffff" />
       </svg>
       <canvas
@@ -245,7 +251,7 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
         aria-label={ariaLabel}
         data-testid="spinner-canvas"
         style={{ width: size, height: size, touchAction: 'none', cursor: canSpin ? 'pointer' : 'not-allowed' }}
-        className="block mx-auto rounded-full"
+        className="block mx-auto rounded-full shadow-[0_20px_50px_-20px_rgba(76,52,200,0.45)]"
         onPointerDown={(e) => {
           downRef.current = { x: e.clientX, y: e.clientY };
         }}

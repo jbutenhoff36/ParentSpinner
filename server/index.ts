@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { pool, db } from "./db";
 import { registerRoutes, errorHandler } from "./routes";
+import { initPush } from "./push";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
@@ -66,6 +67,7 @@ app.use((req, res, next) => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const migrationsFolder = path.resolve(here, "..", "migrations");
   await migrate(db, { migrationsFolder });
+  await initPush();
 
   const server = await registerRoutes(app, sessionMiddleware);
 

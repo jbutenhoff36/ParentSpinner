@@ -31,6 +31,11 @@ export const storage = {
     const [u] = await db.select().from(users).where(and(eq(users.joinCode, code), eq(users.role, "parent")));
     return u;
   },
+  async getFamilyByGuardianCode(code: string): Promise<User | undefined> {
+    if (!code) return undefined;
+    const [u] = await db.select().from(users).where(and(eq(users.guardianCode, code), eq(users.role, "parent")));
+    return u;
+  },
   async createUser(data: InsertUser): Promise<User> {
     const [u] = await db.insert(users).values(data).returning();
     return u;

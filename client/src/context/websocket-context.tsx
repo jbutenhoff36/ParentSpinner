@@ -1,8 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { useNotificationContext } from './notification-context';
-import { authService } from '@/lib/auth-service';
+import { useMe } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
 
 type WebSocketContextType = {
@@ -51,10 +50,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
 
   // The server identifies the user from their login session cookie,
   // so we (re)connect whenever the logged-in user changes.
-  const { data: currentUser } = useQuery({
-    queryKey: ['currentUser'],
-    queryFn: () => authService.getCurrentUser(),
-  });
+  const { data: currentUser } = useMe();
   const userId = currentUser?.id;
 
   useEffect(() => {

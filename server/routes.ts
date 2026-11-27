@@ -4,17 +4,21 @@ import { randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual } from "cry
 import { promisify } from "util";
 import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, or, sql } from "drizzle-orm";
+import { sendPush, pushPublicKey } from "./push";
 import { z } from "zod";
 import { storage, db } from "./storage";
 import {
-  childProfiles, goodDayLog, spinRequests, spins, pendingConsequences,
+  childProfiles, goodDayLog, spinRequests, spins, pendingConsequences, users, pushSubscriptions,
   type ChildProfile, type User,
 } from "@shared/schema";
 
 declare module "express-session" {
   interface SessionData {
     userId?: number;
+    oauthState?: string;
+    oauthMode?: "login" | "link";
+    googlePending?: { sub: string; email: string | null; name: string | null; at: number };
   }
 }
 
@@ -53,9 +57,9 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I/L
 
-function newJoinCode(): string {
+function newJoinCode(length = 6): string {
   let code = "";
-  for (let i = 0; i < 6; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  for (let i = 0; i < length; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
   return code;
 }
 
@@ -65,7 +69,7 @@ function normalizeCode(value: unknown): string {
 
 /** Gives a parent a join code if they don't have one yet (retries on the rare clash). */
 async function ensureJoinCode(user: User): Promise<User> {
-  if (user.role !== "parent" || user.joinCode) return user;
+  if (user.role !== "parent" || user.parentId || user.joinCode) return user;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return (await storage.updateUser(user.id, { joinCode: newJoinCode() })) || user;
@@ -102,18 +106,56 @@ const registerLimit = rateLimiter(20, 60 * 60 * 1000, "Too many sign-ups from th
 const codeLimit = rateLimiter(30, 15 * 60 * 1000, "Too many code checks. Please wait a few minutes and try again.");
 
 function publicUser(user: User) {
-  const { password: _pw, ...rest } = user;
-  return rest;
+  const { password, googleSub, ...rest } = user;
+  return { ...rest, hasPassword: !!password, googleLinked: !!googleSub };
 }
 
 /** The family a user belongs to: a parent's own ID, or a child's parent ID */
+/**
+ * The family a user belongs to. A family is identified by the account that started it.
+ * Kids and extra parents/guardians point at that account through parentId.
+ */
 function familyIdOf(user: User): number {
-  return user.role === "parent" ? user.id : (user.parentId as number);
+  return user.parentId ?? user.id;
 }
 
 function todayKey(): string {
   // Calendar day in the family's time zone (APP_TIMEZONE, else the server's).
   return new Date().toLocaleDateString("en-CA", { timeZone: process.env.APP_TIMEZONE || undefined });
+}
+
+const dayKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date like 2026-01-31");
+
+/** Good days can be logged for today or a missed day in the last two weeks. */
+function checkLoggableDay(day: string) {
+  const today = todayKey();
+  if (day > today) throw new HttpError(400, "You can't log a good day in the future");
+  const earliest = new Date(`${today}T12:00:00Z`);
+  earliest.setUTCDate(earliest.getUTCDate() - 14);
+  if (day < earliest.toISOString().slice(0, 10)) throw new HttpError(400, "You can only log good days from the last two weeks");
+}
+
+type Tx = Pick<typeof db, "update" | "select">;
+
+/**
+ * Turns every full set of good days into an earned spin and keeps the rest,
+ * so reaching the goal always earns a spin however the count got there.
+ */
+async function settleSpins(tx: Tx, childId: number, required: number) {
+  const r = Math.max(1, required);
+  const [before] = await tx.select().from(childProfiles).where(eq(childProfiles.id, childId));
+  const newSpins = Math.floor(before.goodDayCount / r);
+  if (newSpins === 0) return { child: before, newSpins };
+  const [child] = await tx.update(childProfiles).set({
+    earnedSpins: sql`${childProfiles.earnedSpins} + ${newSpins}`,
+    goodDayCount: before.goodDayCount % r,
+  }).where(eq(childProfiles.id, childId)).returning();
+  return { child, newSpins };
+}
+
+async function goodDaysRequiredFor(familyId: number) {
+  const config = await storage.getConfiguration(familyId);
+  return Math.max(1, config.goodDaysRequired || 7);
 }
 
 class HttpError extends Error {
@@ -139,14 +181,14 @@ async function loadChild(user: User, childId: number): Promise<ChildProfile> {
   const child = await storage.getChildProfile(childId);
   const allowed =
     !!child &&
-    ((user.role === "parent" && child.userId === user.id) ||
+    ((user.role === "parent" && child.userId === familyIdOf(user)) ||
       (user.role === "child" && child.childUserId === user.id));
   if (!child || !allowed) throw new HttpError(404, "Child not found");
   return child;
 }
 
 async function myChildIds(user: User): Promise<number[]> {
-  if (user.role === "parent") return (await storage.getChildProfiles(user.id)).map((c) => c.id);
+  if (user.role === "parent") return (await storage.getChildProfiles(familyIdOf(user))).map((c) => c.id);
   const own = await storage.getChildProfileByUserId(user.id);
   return own ? [own.id] : [];
 }
@@ -191,17 +233,34 @@ function startSession(req: Request, userId: number): Promise<void> {
 
 const sockets = new Map<number, Set<WebSocket>>();
 
+type NoticeType = "info" | "success" | "warning" | "spin" | "goodDay";
+
+/** Tells a user something: live in the open app, and as a phone notification. */
 function notifyUser(
   userId: number | null | undefined,
   title: string,
   message: string,
-  notificationType: "info" | "success" | "warning" | "spin" | "goodDay" = "info",
+  notificationType: NoticeType = "info",
+  url = "/",
 ) {
   if (!userId) return;
   const payload = JSON.stringify({ type: "notification", data: { title, message, notificationType } });
   sockets.get(userId)?.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
   });
+  void sendPush([userId], { title, body: message, url, tag: notificationType });
+}
+
+/** Tells every parent and guardian in a family. */
+async function notifyParents(familyId: number | null | undefined, title: string, message: string, notificationType: NoticeType = "info", url = "/") {
+  if (!familyId) return;
+  for (const p of await familyParents(familyId)) notifyUser(p.id, title, message, notificationType, url);
+}
+
+async function familyParents(familyId: number) {
+  return db.select().from(users)
+    .where(and(eq(users.role, "parent"), or(eq(users.id, familyId), eq(users.parentId, familyId))))
+    .orderBy(users.id);
 }
 
 function setupWebSocket(server: Server, sessionMiddleware: RequestHandler) {
@@ -236,6 +295,18 @@ function setupWebSocket(server: Server, sessionMiddleware: RequestHandler) {
   });
 }
 
+// Only send pushes to the real browser push services (so the server can't be pointed elsewhere).
+const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com", ".notify.windows.com", ".push.apple.com"];
+function isPushServiceUrl(value: string) {
+  try {
+    const u = new URL(value);
+    const extra = (process.env.PUSH_EXTRA_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean);
+    return u.protocol === "https:" && [...PUSH_HOSTS, ...extra].some((h) => (h.startsWith(".") ? u.hostname.endsWith(h) : u.hostname === h));
+  } catch {
+    return false;
+  }
+}
+
 // ---------- validation ----------
 
 // Avatars are small data URLs (the browser shrinks photos first) or links.
@@ -251,6 +322,7 @@ const registerSchema = z.object({
   role: z.enum(["parent", "child"]).default("parent"),
   parentCode: z.string().optional().nullable(),
   childProfileId: z.union([z.string(), z.number()]).optional().nullable(),
+  guardianCode: z.string().optional().nullable(),
   email: z.string().email().optional().nullable().or(z.literal("")),
   notifyOnSpin: z.boolean().optional().nullable(),
   notifyOnPending: z.boolean().optional().nullable(),
@@ -269,9 +341,13 @@ function body<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
 export async function registerRoutes(app: Express, sessionMiddleware: RequestHandler): Promise<Server> {
   // ----- auth (public) -----
 
-  app.post("/api/auth/register", wrap(async (req, res) => {
-    registerLimit(req.ip || "unknown");
-    const data = body(registerSchema, req.body);
+  /** Creates a parent (new family) or a child (linked by parent code) and logs them in. */
+  async function createAccount(req: Request, data: {
+    username: string; passwordHash: string | null; googleSub?: string | null; displayName?: string | null;
+    role: "parent" | "child"; parentCode?: string | null; childProfileId?: string | number | null;
+    guardianCode?: string | null;
+    email?: string | null; notifyOnSpin?: boolean | null; notifyOnPending?: boolean | null;
+  }) {
     if (await storage.getUserByUsername(data.username)) {
       throw new HttpError(409, "That username is already taken");
     }
@@ -289,18 +365,32 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       parentId = parent.id;
     }
 
+    // A parent/guardian joining an existing family
+    let joinedFamily: User | undefined;
+    if (data.role === "parent" && data.guardianCode) {
+      joinedFamily = await storage.getFamilyByGuardianCode(normalizeCode(data.guardianCode));
+      if (!joinedFamily) throw new HttpError(400, "That family invite code doesn't match. Ask for a new one.");
+      parentId = joinedFamily.id;
+    }
+
     let user = await storage.createUser({
       username: data.username,
-      password: await hashPassword(data.password),
+      password: data.passwordHash,
       role: data.role,
       parentId,
       email: data.email || null,
       notifyOnSpin: data.notifyOnSpin ?? true,
       notifyOnPending: data.notifyOnPending ?? true,
     });
+    if (data.googleSub || data.displayName) {
+      user = (await storage.updateUser(user.id, { googleSub: data.googleSub ?? null, displayName: data.displayName ?? null })) || user;
+    }
 
-    if (profile) {
+    if (joinedFamily) {
+      void notifyParents(joinedFamily.id, "New parent in your family", `${user.displayName || user.username} joined and can now help run KidSpin.`, "info");
+    } else if (profile) {
       await storage.updateChildProfile(profile.id, { childUserId: user.id });
+      void notifyParents(parentId, "Account linked", `${profile.name} made their own account and can now sign in.`, "info");
     } else {
       user = await ensureJoinCode(user);
       await storage.ensureFamilyDefaults(user.id);
@@ -308,6 +398,139 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     }
 
     await startSession(req, user.id);
+    return user;
+  }
+
+  app.post("/api/auth/register", wrap(async (req, res) => {
+    registerLimit(req.ip || "unknown");
+    const data = body(registerSchema, req.body);
+    const user = await createAccount(req, { ...data, passwordHash: await hashPassword(data.password) });
+    res.status(201).json(publicUser(user));
+  }));
+
+  // ----- Sign in with Google (OAuth 2.0 authorization-code flow) -----
+
+  const google = {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    // Overridable only so the flow can be tested against a fake Google.
+    authUrl: process.env.GOOGLE_AUTH_URL || "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: process.env.GOOGLE_TOKEN_URL || "https://oauth2.googleapis.com/token",
+    userInfoUrl: process.env.GOOGLE_USERINFO_URL || "https://openidconnect.googleapis.com/v1/userinfo",
+  };
+  const googleEnabled = () => !!(google.clientId && google.clientSecret);
+  const appUrl = (req: Request) => (process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const googleRedirectUri = (req: Request) => `${appUrl(req)}/api/auth/google/callback`;
+
+  app.get("/api/auth/providers", (_req, res) => {
+    res.json({ google: googleEnabled() });
+  });
+
+  app.get("/api/auth/google", wrap(async (req, res) => {
+    if (!googleEnabled()) throw new HttpError(404, "Sign in with Google isn't set up yet");
+    const mode = req.query.mode === "link" && req.session.userId ? "link" : "login";
+    const state = randomBytes(24).toString("hex");
+    req.session.oauthState = state;
+    req.session.oauthMode = mode;
+    await new Promise<void>((resolve, reject) => req.session.save((e) => (e ? reject(e) : resolve())));
+    const params = new URLSearchParams({
+      client_id: google.clientId!,
+      redirect_uri: googleRedirectUri(req),
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      prompt: "select_account",
+    });
+    res.redirect(`${google.authUrl}?${params}`);
+  }));
+
+  app.get("/api/auth/google/callback", wrap(async (req, res) => {
+    const fail = (reason: string) => res.redirect(`/login?error=${encodeURIComponent(reason)}`);
+    const { code, state, error } = req.query as Record<string, string | undefined>;
+    const expected = req.session.oauthState;
+    const mode = req.session.oauthMode || "login";
+    delete req.session.oauthState;
+    delete req.session.oauthMode;
+    if (error) return fail("Google sign-in was cancelled.");
+    if (!code || !state || !expected || state.length !== expected.length ||
+        !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) {
+      return fail("That sign-in link expired. Please try again.");
+    }
+
+    const tokenRes = await fetch(google.tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code, client_id: google.clientId!, client_secret: google.clientSecret!,
+        redirect_uri: googleRedirectUri(req), grant_type: "authorization_code",
+      }),
+    });
+    if (!tokenRes.ok) {
+      console.error("Google token exchange failed:", tokenRes.status, await tokenRes.text().catch(() => ""));
+      return fail("Google sign-in didn't work. Please try again.");
+    }
+    const { access_token } = (await tokenRes.json()) as { access_token?: string };
+    const infoRes = await fetch(google.userInfoUrl, { headers: { Authorization: `Bearer ${access_token}` } });
+    if (!infoRes.ok) return fail("Couldn't read your Google profile. Please try again.");
+    const info = (await infoRes.json()) as { sub?: string; email?: string; email_verified?: boolean; name?: string };
+    if (!info.sub) return fail("Couldn't read your Google profile. Please try again.");
+
+    const [existing] = await db.select().from(users).where(eq(users.googleSub, info.sub));
+
+    if (mode === "link" && req.session.userId) {
+      if (existing && existing.id !== req.session.userId) {
+        return res.redirect("/?google=" + encodeURIComponent("That Google account is already used by another login."));
+      }
+      await storage.updateUser(req.session.userId, { googleSub: info.sub });
+      return res.redirect("/?google=linked");
+    }
+
+    if (existing) {
+      await storage.updateUser(existing.id, { lastLogin: new Date() });
+      await startSession(req, existing.id);
+      return res.redirect("/");
+    }
+
+    // New person: remember who Google says they are, then ask parent or kid.
+    req.session.googlePending = {
+      sub: info.sub,
+      email: info.email_verified ? info.email ?? null : null,
+      name: info.name ?? null,
+      at: Date.now(),
+    };
+    await new Promise<void>((resolve, reject) => req.session.save((e) => (e ? reject(e) : resolve())));
+    res.redirect("/welcome");
+  }));
+
+  function pendingGoogle(req: Request) {
+    const p = req.session.googlePending;
+    if (!p || Date.now() - p.at > 30 * 60 * 1000) throw new HttpError(404, "Please sign in with Google again");
+    return p;
+  }
+
+  app.get("/api/auth/google/pending", wrap(async (req, res) => {
+    const p = pendingGoogle(req);
+    const base = (p.name || p.email?.split("@")[0] || "user").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 20) || "user";
+    let suggestion = base.length >= 3 ? base : `${base}123`;
+    for (let i = 2; await storage.getUserByUsername(suggestion); i++) suggestion = `${base}${i}`;
+    res.json({ name: p.name, email: p.email, suggestedUsername: suggestion });
+  }));
+
+  app.post("/api/auth/google/complete", wrap(async (req, res) => {
+    registerLimit(req.ip || "unknown");
+    const p = pendingGoogle(req);
+    const data = body(z.object({
+      username: z.string().trim().min(3, "Username must be at least 3 characters").max(50),
+      role: z.enum(["parent", "child"]),
+      parentCode: z.string().optional().nullable(),
+      childProfileId: z.union([z.string(), z.number()]).optional().nullable(),
+      guardianCode: z.string().optional().nullable(),
+    }), req.body);
+    const [taken] = await db.select({ id: users.id }).from(users).where(eq(users.googleSub, p.sub));
+    if (taken) throw new HttpError(409, "This Google account already has a login");
+    const user = await createAccount(req, {
+      ...data, passwordHash: null, googleSub: p.sub, displayName: p.name, email: p.email,
+    });
     res.status(201).json(publicUser(user));
   }));
 
@@ -318,12 +541,15 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     );
     loginLimit(`${req.ip}|${username.toLowerCase()}`);
     const user = await storage.getUserByUsername(username);
-    if (!user || !(await verifyPassword(password, user.password))) {
+    if (user && !user.password) {
+      throw new HttpError(401, "This account uses Sign in with Google. Tap \"Continue with Google\" instead.");
+    }
+    if (!user || !(await verifyPassword(password, user.password!))) {
       throw new HttpError(401, "Wrong username or password");
     }
     // Upgrade any old plain-text password on the way in.
     const updates: Partial<User> = { lastLogin: new Date() };
-    if (!user.password.startsWith("scrypt:")) updates.password = await hashPassword(password);
+    if (!user.password!.startsWith("scrypt:")) updates.password = await hashPassword(password);
     const updated = (await storage.updateUser(user.id, updates)) || user;
     await startSession(req, user.id);
     res.json(publicUser(updated));
@@ -350,18 +576,122 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     });
   }));
 
+  app.get("/api/auth/verify-guardian-code", wrap(async (req, res) => {
+    codeLimit(req.ip || "unknown");
+    const code = normalizeCode(req.query.code);
+    const family = code.length === 8 ? await storage.getFamilyByGuardianCode(code) : undefined;
+    if (!family) return res.json({ valid: false });
+    res.json({ valid: true, familyOf: family.displayName || family.username });
+  }));
+
   // Everything below needs a logged-in user.
   app.use("/api", requireAuth);
 
   app.get("/api/auth/me", wrap(async (req, res) => {
-    res.json(publicUser(await ensureJoinCode(req.user!)));
+    const me = await ensureJoinCode(req.user!);
+    const family = me.parentId ? await storage.getUser(me.parentId) : me;
+    res.json({ ...publicUser(me), joinCode: me.role === "parent" ? family?.joinCode ?? null : null, familyStarter: !me.parentId });
+  }));
+
+  // ----- family: parents & guardians -----
+
+  async function ensureGuardianCode(familyId: number): Promise<string> {
+    const starter = await storage.getUser(familyId);
+    if (starter?.guardianCode) return starter.guardianCode;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        return (await storage.updateUser(familyId, { guardianCode: newJoinCode(8) }))!.guardianCode!;
+      } catch (err: any) {
+        if (err?.code !== "23505") throw err;
+      }
+    }
+    throw new Error("Could not create a code");
+  }
+
+  app.get("/api/family", requireParent, wrap(async (req, res) => {
+    const familyId = familyIdOf(req.user!);
+    const parents = await familyParents(familyId);
+    res.json({
+      guardianCode: await ensureGuardianCode(familyId),
+      parents: parents.map((p) => ({
+        id: p.id, name: p.displayName || p.username, username: p.username,
+        starter: p.id === familyId, you: p.id === req.user!.id,
+      })),
+    });
+  }));
+
+  app.post("/api/family/guardian-code", requireParent, wrap(async (req, res) => {
+    const familyId = familyIdOf(req.user!);
+    await storage.updateUser(familyId, { guardianCode: null });
+    res.json({ guardianCode: await ensureGuardianCode(familyId) });
+  }));
+
+  // Remove another parent/guardian (or leave, if it's you). The family starter can't be removed.
+  app.delete("/api/family/parents/:id", requireParent, wrap(async (req, res) => {
+    const familyId = familyIdOf(req.user!);
+    const target = await storage.getUser(parseId(req.params.id));
+    if (!target || target.role !== "parent" || target.parentId !== familyId) {
+      throw new HttpError(404, target?.id === familyId ? "The person who started the family can't be removed" : "Not in your family");
+    }
+    // They get an empty family of their own, so their login still works.
+    await storage.updateUser(target.id, { parentId: null });
+    await ensureJoinCode((await storage.getUser(target.id))!);
+    await storage.ensureFamilyDefaults(target.id);
+    await storage.getConfiguration(target.id);
+    res.json({ message: "Removed" });
+  }));
+
+  app.get("/api/push/key", (_req, res) => {
+    res.json({ publicKey: pushPublicKey() });
+  });
+
+  app.post("/api/push/subscribe", wrap(async (req, res) => {
+    const sub = body(z.object({
+      endpoint: z.string().url().max(2000).refine(isPushServiceUrl, "That isn't a known push service"),
+      keys: z.object({ p256dh: z.string().min(10).max(500), auth: z.string().min(4).max(200) }),
+    }), req.body);
+    await db.insert(pushSubscriptions)
+      .values({ userId: req.user!.id, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth })
+      .onConflictDoUpdate({ target: pushSubscriptions.endpoint, set: { userId: req.user!.id, p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
+    res.status(201).json({ message: "Notifications on" });
+  }));
+
+  app.post("/api/push/unsubscribe", wrap(async (req, res) => {
+    const { endpoint } = body(z.object({ endpoint: z.string().max(2000) }), req.body);
+    await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.endpoint, endpoint), eq(pushSubscriptions.userId, req.user!.id)));
+    res.json({ message: "Notifications off" });
+  }));
+
+  // Send a test notification to your own devices
+  app.post("/api/push/test", wrap(async (req, res) => {
+    await sendPush([req.user!.id], { title: "KidSpin notifications are on ✅", body: "You'll get a heads-up like this when something needs you.", url: "/" });
+    res.json({ message: "Sent" });
+  }));
+
+  app.post("/api/auth/google/unlink", wrap(async (req, res) => {
+    if (!req.user!.password) throw new HttpError(400, "Set a password first, or you won't be able to sign in");
+    res.json(publicUser((await storage.updateUser(req.user!.id, { googleSub: null }))!));
+  }));
+
+  // Set or change your own password (Google-only accounts can add one here)
+  app.post("/api/auth/password", wrap(async (req, res) => {
+    const data = body(z.object({
+      currentPassword: z.string().optional(),
+      newPassword: z.string().min(6, "Password must be at least 6 characters").max(200),
+    }), req.body);
+    const user = req.user!;
+    if (user.password && !(data.currentPassword && (await verifyPassword(data.currentPassword, user.password)))) {
+      throw new HttpError(400, "Your current password is wrong");
+    }
+    await storage.updateUser(user.id, { password: await hashPassword(data.newPassword) });
+    res.json({ message: "Password saved" });
   }));
 
   // Parent: get a fresh join code (the old one stops working)
   app.post("/api/auth/join-code", requireParent, wrap(async (req, res) => {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        const updated = await storage.updateUser(req.user!.id, { joinCode: newJoinCode() });
+        const updated = await storage.updateUser(familyIdOf(req.user!), { joinCode: newJoinCode() });
         return res.json({ joinCode: updated!.joinCode });
       } catch (err: any) {
         if (err?.code !== "23505") throw err;
@@ -390,7 +720,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.get("/api/children", wrap(async (req, res) => {
     const user = req.user!;
-    if (user.role === "parent") return res.json(await storage.getChildProfiles(user.id));
+    if (user.role === "parent") return res.json(await storage.getChildProfiles(familyIdOf(user)));
     const own = await storage.getChildProfileByUserId(user.id);
     res.json(own ? [own] : []);
   }));
@@ -401,7 +731,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.post("/api/children", requireParent, wrap(async (req, res) => {
     const data = body(z.object({ name: z.string().trim().min(1, "Name is required").max(50), avatar: avatarSchema }), req.body);
-    const child = await storage.createChildProfile({ name: data.name, avatar: data.avatar ?? null, userId: req.user!.id });
+    const child = await storage.createChildProfile({ name: data.name, avatar: data.avatar ?? null, userId: familyIdOf(req.user!) });
     res.status(201).json(child);
   }));
 
@@ -433,31 +763,28 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.post("/api/children/:id/goodday", requireParent, wrap(async (req, res) => {
     const child = await loadChild(req.user!, parseId(req.params.id));
-    const config = await storage.getConfiguration(req.user!.id);
-    const required = Math.max(1, config.goodDaysRequired || 7);
-    const day = todayKey();
+    const required = await goodDaysRequiredFor(familyIdOf(req.user!));
+    const { day = todayKey() } = body(z.object({ day: dayKeySchema.optional() }), req.body ?? {});
+    checkLoggableDay(day);
 
     try {
       const result = await db.transaction(async (tx) => {
         const [log] = await tx.insert(goodDayLog).values({ childId: child.id, userId: req.user!.id, day }).returning();
-        const newCount = child.goodDayCount + 1;
-        const earned = newCount >= required;
-        const [updated] = await tx.update(childProfiles).set(
-          earned
-            ? { goodDayCount: 0, earnedSpins: sql`${childProfiles.earnedSpins} + 1` }
-            : { goodDayCount: newCount },
-        ).where(eq(childProfiles.id, child.id)).returning();
-        return { log, child: updated, isSpinAvailable: earned };
+        await tx.update(childProfiles).set({ goodDayCount: sql`${childProfiles.goodDayCount} + 1` })
+          .where(eq(childProfiles.id, child.id));
+        const { child: updated, newSpins } = await settleSpins(tx, child.id, required);
+        return { log, child: updated, isSpinAvailable: newSpins > 0 };
       });
 
       if (req.query.skipNotifications !== "true") {
         notifyUser(
           child.childUserId,
-          result.isSpinAvailable ? "You earned a spin!" : "Good day!",
+          result.isSpinAvailable ? "You earned a spin! 🎉" : "Good day! ⭐",
           result.isSpinAvailable
-            ? "Great job! You earned a Good Spin."
-            : `Good day logged: ${result.child.goodDayCount}/${required} toward your next spin.`,
+            ? "Open KidSpin to spin the reward wheel."
+            : `${result.child.goodDayCount} of ${required} good days toward your next spin.`,
           "goodDay",
+          result.isSpinAvailable ? "/spin" : "/",
         );
       }
       res.status(201).json({
@@ -465,9 +792,38 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
         message: result.isSpinAvailable ? `${child.name} earned a spin!` : "Good day logged",
       });
     } catch (err: any) {
-      if (err?.code === "23505") throw new HttpError(409, "Already logged a good day today");
+      if (err?.code === "23505") {
+        throw new HttpError(409, day === todayKey() ? "Already logged a good day today" : `Already logged a good day on ${day}`);
+      }
       throw err;
     }
+  }));
+
+  // Undo a good day logged by mistake. If it had just turned into a spin, the spin goes back too.
+  app.delete("/api/children/:id/goodday/:day", requireParent, wrap(async (req, res) => {
+    const child = await loadChild(req.user!, parseId(req.params.id));
+    const day = body(dayKeySchema, req.params.day);
+    const required = await goodDaysRequiredFor(familyIdOf(req.user!));
+    const updated = await db.transaction(async (tx) => {
+      const [removed] = await tx.delete(goodDayLog)
+        .where(and(eq(goodDayLog.childId, child.id), eq(goodDayLog.day, day))).returning();
+      if (!removed) throw new HttpError(404, "No good day logged on that day");
+      const [current] = await tx.select().from(childProfiles).where(eq(childProfiles.id, child.id)).for("update");
+      if (current.goodDayCount > 0) {
+        const [c] = await tx.update(childProfiles).set({ goodDayCount: current.goodDayCount - 1 })
+          .where(eq(childProfiles.id, child.id)).returning();
+        return c;
+      }
+      const waiting = await storage.countPendingGoodRequests(child.id);
+      if (current.earnedSpins - waiting <= 0) {
+        throw new HttpError(409, "That good day already became a spin that was used, so it can't be undone");
+      }
+      const [c] = await tx.update(childProfiles)
+        .set({ earnedSpins: current.earnedSpins - 1, goodDayCount: required - 1 })
+        .where(eq(childProfiles.id, child.id)).returning();
+      return c;
+    });
+    res.json(updated);
   }));
 
   app.post("/api/children/:id/badspin", requireParent, wrap(async (req, res) => {
@@ -498,7 +854,11 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       if (k === "createdAt" && v === null) continue;
       (updates as any)[k] = v;
     }
-    res.json(await storage.updateChildProfile(child.id, updates));
+    await storage.updateChildProfile(child.id, updates);
+    // Reaching the good-day goal by editing the count still earns the spin(s).
+    const { child: updated, newSpins } = await settleSpins(db, child.id, await goodDaysRequiredFor(familyIdOf(req.user!)));
+    if (newSpins > 0) notifyUser(child.childUserId, "You earned a spin! 🎉", "Open KidSpin to spin the reward wheel.", "goodDay", "/spin");
+    res.json(updated);
   }));
 
   // ----- consequences (the family's wheels) -----
@@ -514,14 +874,14 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       type: typeSchema,
       section: z.coerce.number().int().min(1).max(50).optional(),
     }), req.body);
-    const existing = await storage.getConsequences(req.user!.id, data.type);
+    const existing = await storage.getConsequences(familyIdOf(req.user!), data.type);
     const section = data.section ?? (existing.reduce((m, c) => Math.max(m, c.section), 0) + 1);
-    res.status(201).json(await storage.createConsequence({ ...data, section, userId: req.user!.id }));
+    res.status(201).json(await storage.createConsequence({ ...data, section, userId: familyIdOf(req.user!) }));
   }));
 
   async function loadConsequence(user: User, id: number) {
     const c = await storage.getConsequence(id);
-    if (!c || c.userId !== user.id) throw new HttpError(404, "Consequence not found");
+    if (!c || c.userId !== familyIdOf(user)) throw new HttpError(404, "Consequence not found");
     return c;
   }
 
@@ -558,7 +918,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     const child = await loadChild(req.user!, data.childId);
     if (data.consequenceId) await loadConsequence(req.user!, data.consequenceId);
     const p = await storage.addPending({ ...data, section: data.section ?? 0, consequenceId: data.consequenceId ?? null, childId: child.id, userId: req.user!.id });
-    notifyUser(child.childUserId, "New consequence", `${p.text} was added to your list.`, "info");
+    notifyUser(child.childUserId, "Added to your list", p.text, "info", "/todos");
     res.status(201).json(p);
   }));
 
@@ -600,7 +960,15 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       notificationsEnabled: z.boolean().optional(),
     }), req.body);
     const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-    res.json(await storage.saveConfiguration(req.user!.id, clean));
+    const saved = await storage.saveConfiguration(familyIdOf(req.user!), clean);
+    // Lowering the goal can mean some kids have already reached it.
+    if (data.goodDaysRequired) {
+      for (const c of await storage.getChildProfiles(familyIdOf(req.user!))) {
+        const { newSpins } = await settleSpins(db, c.id, saved.goodDaysRequired);
+        if (newSpins > 0) notifyUser(c.childUserId, "You earned a spin! 🎉", "Open KidSpin to spin the reward wheel.", "goodDay", "/spin");
+      }
+    }
+    res.json(saved);
   }));
 
   // ----- spins (server picks the result) -----
@@ -666,7 +1034,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   app.post("/api/spins/:id/accept", requireParent, wrap(async (req, res) => {
     const user = req.user!;
     const spin = await storage.getSpin(req.params.id);
-    if (!spin || spin.familyId !== user.id || spin.createdBy !== user.id) throw new HttpError(404, "Spin not found");
+    if (!spin || spin.familyId !== familyIdOf(user) || spin.createdBy !== user.id) throw new HttpError(404, "Spin not found");
     const child = await loadChild(user, spin.childId);
 
     const pending = await db.transaction(async (tx) => {
@@ -692,7 +1060,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       return p;
     });
 
-    notifyUser(child.childUserId, "New consequence", `${pending.text} was added to your list.`, spin.type === "good" ? "success" : "warning");
+    notifyUser(child.childUserId, spin.type === "good" ? "You won a prize!" : "Added to your list", pending.text, spin.type === "good" ? "success" : "warning", "/todos");
     res.status(201).json(pending);
   }));
 
@@ -730,12 +1098,12 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       return r;
     });
 
-    notifyUser(child.userId, "New spin request", `${child.name} landed on "${spin.text}" and is asking for approval.`, "spin");
+    void notifyParents(child.userId, `${child.name} wants to keep a prize`, `They landed on "${spin.text}". Tap to approve.`, "spin", "/");
     res.status(201).json(request);
   }));
 
   app.get("/api/spinrequests/pending", requireParent, wrap(async (req, res) => {
-    const children = await storage.getChildProfiles(req.user!.id);
+    const children = await storage.getChildProfiles(familyIdOf(req.user!));
     const names = new Map(children.map((c) => [c.id, c.name]));
     const requests = await storage.getPendingRequestsForChildren(children.map((c) => c.id));
     res.json(requests.map((r) => ({ ...r, childName: names.get(r.childId) ?? null })));
@@ -781,7 +1149,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       return claimed;
     });
 
-    notifyUser(child.childUserId, "Spin approved!", `"${r.consequenceText}" was added to your earned list.`, "success");
+    notifyUser(child.childUserId, "Prize approved! 🎉", `"${r.consequenceText}" is on your list.`, "success", "/todos");
     res.json(updated);
   }));
 
@@ -792,7 +1160,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       .set({ status: "rejected", approvedAt: new Date(), approvedBy: user.id })
       .where(and(eq(spinRequests.id, r.id), eq(spinRequests.status, "pending"))).returning();
     if (!updated) throw new HttpError(409, "This request was already handled");
-    notifyUser(child.childUserId, "Spin not approved", `Your request for "${r.consequenceText}" wasn't approved. Your spin is still yours.`, "warning");
+    notifyUser(child.childUserId, "Not approved this time", `"${r.consequenceText}" wasn't approved, but your spin is still yours.`, "warning", "/spin");
     res.json(updated);
   }));
 
