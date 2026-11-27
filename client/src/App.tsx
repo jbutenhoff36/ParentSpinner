@@ -12,6 +12,7 @@ import KidHome from "@/pages/kid-home";
 import SpinPage from "@/pages/spin";
 import TodosPage from "@/pages/todos";
 import SetupPage from "@/pages/setup";
+import { PrivacyPage, TermsPage } from "@/pages/legal";
 import { AppShell } from "@/components/app-shell";
 import { NotificationProvider, useNotificationContext } from "./context/notification-context";
 import { WebSocketProvider } from "./context/websocket-context";
@@ -60,6 +61,8 @@ function AppContent() {
       <Switch>
         <Route path="/login" component={LoginPage} />
         <Route path="/welcome" component={WelcomePage} />
+        <Route path="/privacy" component={PrivacyPage} />
+        <Route path="/terms" component={TermsPage} />
         <Route path="/auth"><Redirect to="/login" /></Route>
         <Route component={SignedIn} />
       </Switch>
