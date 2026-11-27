@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReactConfetti from 'react-confetti';
 import { useWindowSize } from '@/hooks/use-window-size';
 import { playCelebrationSound, playCustomYaySound, initAudioSystem } from '../../lib/sound-utils';
@@ -20,6 +20,9 @@ export function ConfettiCelebration({
 }: ConfettiCelebrationProps) {
   const [isActive, setIsActive] = useState(active);
   const { width, height } = useWindowSize();
+  // Keep the latest callback without restarting the effect (and the sound) on every render
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     setIsActive(active);
@@ -38,13 +41,13 @@ export function ConfettiCelebration({
     if (active && duration > 0) {
       timer = setTimeout(() => {
         setIsActive(false);
-        onComplete?.();
+        onCompleteRef.current?.();
       }, duration);
     }
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [active, duration, onComplete, soundVolume, useCustomSound]);
+  }, [active, duration, soundVolume, useCustomSound]);
 
   if (!isActive) return null;
 
@@ -53,6 +56,7 @@ export function ConfettiCelebration({
       width={width}
       height={height}
       recycle={false}
+      style={{ position: 'fixed', top: 0, left: 0, zIndex: 60, pointerEvents: 'none' }}
       numberOfPieces={500}
       tweenDuration={10000}
       colors={['#3B82F6', '#EF4444', '#F59E0B', '#10B981', '#7C3AED', '#84CC16', '#F97316', '#EC4899']}

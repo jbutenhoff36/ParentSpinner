@@ -418,12 +418,12 @@ export default function ChildrenView() {
   return (
     <div className="p-4">
       <ConfettiCelebration active={showConfetti} duration={5000} onComplete={() => setShowConfetti(false)} />
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
         <div>
           <h2 className="text-2xl font-bold text-gray-800">Child Profiles</h2>
           <p className="text-gray-500 text-sm">Manage your children's profiles</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button variant="default" size="sm" data-testid="button-add-child">
@@ -521,7 +521,7 @@ export default function ChildrenView() {
           </Button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {children.map((child) => (
             <Card key={child.id} className="overflow-hidden">
               <CardHeader className="pb-2">
@@ -542,10 +542,10 @@ export default function ChildrenView() {
                           </>
                         )}
                       </div>
-                      <div className="mt-2 w-full">
-                        <div className="flex justify-between mb-1 text-xs">
-                          <span>Progress to good spin</span>
-                          <span>{child.goodDayCount}/{goodDaysRequired}</span>
+                      <div className="mt-2 w-full min-w-[11rem]">
+                        <div className="flex justify-between gap-3 mb-1 text-xs text-muted-foreground">
+                          <span>Next spin</span>
+                          <span>{child.goodDayCount} of {goodDaysRequired} good days</span>
                         </div>
                         <Progress value={Math.min(100, (child.goodDayCount / goodDaysRequired) * 100)} className="h-2" />
                         {getEarnedSpinsCount(child.id) > 0 && (
