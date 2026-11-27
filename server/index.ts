@@ -2,7 +2,10 @@ import "./env";
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
-import { pool } from "./db";
+import path from "path";
+import { fileURLToPath } from "url";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { pool, db } from "./db";
 import { registerRoutes, errorHandler } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
@@ -50,6 +53,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Create or update the database tables (safe to run on every start).
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const migrationsFolder = path.resolve(here, "..", "migrations");
+  await migrate(db, { migrationsFolder });
+
   const server = await registerRoutes(app, sessionMiddleware);
 
   // Sends the error response and stops there (no re-throw, so one bad request can't crash the server).

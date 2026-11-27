@@ -12,8 +12,7 @@ Neon or Supabase works, or a local Postgres install).
 ```bash
 npm install
 cp .env.example .env        # then put your DATABASE_URL and a SESSION_SECRET in .env
-npm run db:push             # creates the tables
-npm run dev                 # http://localhost:5000
+npm run dev                 # creates the tables on first start, then serves                # http://localhost:5000
 ```
 
 Phones on the same Wi-Fi can open `http://<your-computer's-IP>:5000`.
@@ -29,7 +28,8 @@ free Postgres expires after 30 days, so use a paid database ($7/mo) or point
 `DATABASE_URL` at a free Neon database for long-term use.
 
 **Railway / Fly.io / any VPS:** set these environment variables, then run
-`npm ci --include=dev && npm run build && npm run db:push -- --force` to build and `npm start` to run:
+`npm ci --include=dev && npm run build` to build and `npm start` to run (the server creates
+and updates its tables on start):
 
 | Variable | What it is |
 | --- | --- |
@@ -60,4 +60,5 @@ on a home network), also set `COOKIE_SECURE=false`.
 ## Scripts
 
 `npm run dev` (dev server with hot reload), `npm run build`, `npm start`,
-`npm run check` (TypeScript), `npm run db:push` (sync tables).
+`npm run check` (TypeScript), `npm run db:generate` (make a new migration after
+changing `shared/schema.ts`; it runs automatically on the next start).
