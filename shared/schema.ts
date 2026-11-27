@@ -12,6 +12,7 @@ export const users = pgTable("users", {
   email: text("email"), // For notifications
   joinCode: text("join_code"), // Parents: code kids use to link their account
   googleSub: text("google_sub"), // Google account ID, for Sign in with Google
+  guardianCode: text("guardian_code"), // Family starter: code other parents/guardians use to join
   displayName: text("display_name"),
   notifyOnSpin: boolean("notify_on_spin").default(true),
   notifyOnPending: boolean("notify_on_pending").default(true),
@@ -20,7 +21,24 @@ export const users = pgTable("users", {
 }, (t) => [
   uniqueIndex("users_join_code_idx").on(t.joinCode),
   uniqueIndex("users_google_sub_idx").on(t.googleSub),
+  uniqueIndex("users_guardian_code_idx").on(t.guardianCode),
 ]);
+
+// Phone/browser push subscriptions (one per device a user turned notifications on)
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [uniqueIndex("push_endpoint_idx").on(t.endpoint)]);
+
+// Small key/value store for server settings (e.g. generated push keys)
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

@@ -27,7 +27,7 @@ export function InviteCard({ me }: { me: Me }) {
           <Users className="h-6 w-6" aria-hidden="true" />
         </span>
         <div className="flex-1">
-          <h2 className="font-bold">Let your kids sign in</h2>
+          <h2 className="font-bold">Kid code: let your kids sign in</h2>
           <p className="text-sm text-muted-foreground">They choose "I'm a kid" when signing up and enter this code.</p>
         </div>
         <div className="flex items-center gap-2">

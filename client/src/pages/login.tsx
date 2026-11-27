@@ -5,7 +5,7 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AuthLayout, KidJoinFields, RolePicker, type Role } from "@/components/auth-parts";
+import { AuthLayout, KidJoinFields, ParentJoinFields, RolePicker, type ParentJoin, type Role } from "@/components/auth-parts";
 import { GoogleG } from "@/pages/setup";
 import { apiRequest } from "@/lib/queryClient";
 import { errorMessage, type Me } from "@/lib/api";
@@ -21,6 +21,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [join, setJoin] = useState<{ code: string; profileId: number | null }>({ code: "", profileId: null });
+  const [pjoin, setPjoin] = useState<ParentJoin>({ mode: "new", code: "", valid: true });
   const { data: providers } = useQuery<{ google: boolean }>({ queryKey: ["/api/auth/providers"] });
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export default function LoginPage() {
   const done = (user: Me) => {
     qc.clear();
     qc.setQueryData(["/api/auth/me"], user);
+    qc.invalidateQueries({ queryKey: ["/api/auth/me"] });
     setLocation("/");
   };
 
@@ -44,13 +46,14 @@ export default function LoginPage() {
         username, password, role, email: role === "parent" ? email : undefined,
         parentCode: role === "child" ? join.code : undefined,
         childProfileId: role === "child" ? join.profileId : undefined,
+        guardianCode: role === "parent" && pjoin.mode === "join" ? pjoin.code : undefined,
       }),
     onSuccess: done,
     onError: (e) => setError(errorMessage(e)),
   });
 
   const busy = signIn.isPending || signUp.isPending;
-  const canSignUp = username.trim().length >= 3 && password.length >= 6 && (role === "parent" || !!join.profileId);
+  const canSignUp = username.trim().length >= 3 && password.length >= 6 && (role === "parent" ? pjoin.valid : !!join.profileId);
 
   return (
     <AuthLayout>
@@ -105,6 +108,7 @@ export default function LoginPage() {
         <form className={cn("grid gap-4", !providers?.google && "mt-6")} onSubmit={(e) => { e.preventDefault(); setError(""); if (canSignUp) signUp.mutate(); }}>
           <RolePicker role={role} onChange={setRole} />
           {role === "child" && <KidJoinFields onChange={setJoin} />}
+          {role === "parent" && <ParentJoinFields onChange={setPjoin} />}
           <div className="grid gap-1.5">
             <Label htmlFor="register-username">Username</Label>
             <Input id="register-username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="At least 3 characters" />
@@ -120,7 +124,7 @@ export default function LoginPage() {
             </div>
           )}
           <Button type="submit" size="lg" className="mt-1 h-12" disabled={busy || !canSignUp} data-testid="button-register">
-            {signUp.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? "Create family account" : "Join my family"}
+            {signUp.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? (pjoin.mode === "join" ? "Join this family" : "Create family account") : "Join my family"}
           </Button>
         </form>
       )}

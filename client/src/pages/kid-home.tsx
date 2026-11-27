@@ -5,6 +5,7 @@ import type { PendingConsequence, SpinRequest } from "@shared/schema";
 import { ProgressRing } from "@/components/progress-ring";
 import { KidAvatar } from "@/components/kid-avatar";
 import { Button } from "@/components/ui/button";
+import { NotificationsPrompt } from "@/components/notifications-card";
 import { useChildren, useConfig, firstName, type Me } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -71,6 +72,8 @@ export default function KidHome({ me }: { me: Me }) {
           )}
         </div>
       </section>
+
+      <NotificationsPrompt role="child" />
 
       <section>
         <div className="mb-3 flex items-center justify-between">

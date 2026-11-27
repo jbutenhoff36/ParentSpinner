@@ -1,4 +1,4 @@
-# Good Spin Bad Spin
+# KidSpin
 
 A family behavior app: parents log good days, kids earn spins on the Good wheel,
 parents can spin the Bad and Fighting wheels, and every result lands on the
@@ -24,11 +24,21 @@ The app's name is set in `client/src/lib/brand.ts` (plus the page title in
 
 The app is one Node server plus one Postgres database. Any host that runs Node works.
 
-**Render (simplest):** push this folder to a GitHub repo, then on render.com choose
-New > Blueprint and pick the repo. `render.yaml` creates the web service and the
-database and fills in `DATABASE_URL` and `SESSION_SECRET` for you. Note that Render's
-free Postgres expires after 30 days, so use a paid database ($7/mo) or point
-`DATABASE_URL` at a free Neon database for long-term use.
+**Database: Neon (free).** Neon's free Postgres doesn't expire. It pauses when nobody
+is using the app and wakes up in about a second on the next visit.
+
+1. Go to https://neon.tech and click **Sign up**, then **Continue with GitHub**.
+2. Create a project: any name (e.g. `kidspin`), Postgres version as suggested, and a
+   region near your host (for Render's default Oregon region pick **AWS US West (Oregon)**).
+3. On the project dashboard click **Connect**, and copy the connection string. It looks like
+   `postgresql://neondb_owner:...@ep-....us-west-2.aws.neon.tech/neondb?sslmode=require`.
+   That is your `DATABASE_URL`. The app creates its tables on first start.
+
+**Render (web app, free):** on render.com choose New > Blueprint and pick this repo.
+`render.yaml` creates the `kidspin` web service and fills in `SESSION_SECRET`. Then open
+the service, go to **Environment**, add `DATABASE_URL` (from Neon) plus the Google keys
+below, and save. The free plan sleeps after 15 minutes idle, so the first visit after a
+break takes about a minute.
 
 **Railway / Fly.io / any VPS:** set these environment variables, then run
 `npm ci --include=dev && npm run build` to build and `npm start` to run (the server creates
@@ -42,6 +52,7 @@ and updates its tables on start):
 | `APP_TIMEZONE` | e.g. `America/Chicago`, used for "one good day per day" |
 | `PORT` | Usually set by the host |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional. Turns on "Continue with Google" (see below) |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional. Keys for phone notifications. If unset, the app makes a pair and keeps it in the database |
 | `APP_URL` | Optional. Public address, e.g. `https://spin.example.com`, if Google sign-in builds the wrong return link |
 
 In production, login cookies are HTTPS-only. If you serve over plain HTTP (for example
@@ -58,14 +69,14 @@ The button only appears once both Google settings are filled in.
    The basic email and profile access this app uses doesn't need Google's review.
 4. Under **Clients**, click **Create client**, choose **Web application**, and under
    **Authorized redirect URIs** add your address followed by `/api/auth/google/callback`, e.g.
-   `https://good-spin-bad-spin.onrender.com/api/auth/google/callback`.
+   `https://kidspin.onrender.com/api/auth/google/callback`.
    Add one for each address you use (for example a custom domain later).
 5. Copy the **Client ID** and **Client secret**. In Render, open the web service,
    go to **Environment**, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, and save.
    Render redeploys and the button appears.
 
-People who sign in with Google for the first time choose "I'm a parent" (starts a family)
-or "I'm a kid" (enters the parent code). A parent who already has a username can link
+People who sign in with Google for the first time choose "I'm a parent" (start a new family,
+or join one with a family invite code) or "I'm a kid" (enters the kid code). A parent who already has a username can link
 Google under Setup > Your account.
 
 ## How it works
@@ -91,3 +102,21 @@ Google under Setup > Your account.
 `npm run dev` (dev server with hot reload), `npm run build`, `npm start`,
 `npm run check` (TypeScript), `npm run db:generate` (make a new migration after
 changing `shared/schema.ts`; it runs automatically on the next start).
+
+## More parents and guardians
+
+A family can have any number of parents, grandparents, or guardians. Under **Setup > Family**
+any parent can copy the 8-character family invite code. The new person signs up, picks
+"I'm a parent", then **Join a family**, and enters the code. Every parent sees the same kids,
+wheels, and approvals. Parents can be removed there too, and the code can be changed at any time
+(old codes stop working). The kid code is separate and only lets kids sign in.
+
+## Phone notifications
+
+Each person turns them on under **Setup > Your account > Notifications** (or from the prompt on
+Home). Parents hear about good days, earned spins, and spin requests; kids hear about earned
+spins, new chores or rewards, and approvals.
+
+- Android and computers: works in Chrome, Edge, and Firefox right away.
+- iPhone and iPad (iOS 16.4 or newer): open the site in Safari, tap Share, then
+  **Add to Home Screen**, open KidSpin from the Home Screen, and turn notifications on there.

@@ -5,7 +5,7 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AuthLayout, KidJoinFields, RolePicker, type Role } from "@/components/auth-parts";
+import { AuthLayout, KidJoinFields, ParentJoinFields, RolePicker, type ParentJoin, type Role } from "@/components/auth-parts";
 import { apiRequest } from "@/lib/queryClient";
 import { errorMessage, type Me } from "@/lib/api";
 
@@ -18,6 +18,7 @@ export default function WelcomePage() {
   const [role, setRole] = useState<Role>("parent");
   const [username, setUsername] = useState<string | null>(null);
   const [join, setJoin] = useState<{ code: string; profileId: number | null }>({ code: "", profileId: null });
+  const [pjoin, setPjoin] = useState<ParentJoin>({ mode: "new", code: "", valid: true });
   const [error, setError] = useState("");
   const { data, isLoading, isError } = useQuery<Pending>({
     queryKey: ["/api/auth/google/pending"],
@@ -29,10 +30,12 @@ export default function WelcomePage() {
       role, username: username ?? data?.suggestedUsername,
       parentCode: role === "child" ? join.code : undefined,
       childProfileId: role === "child" ? join.profileId : undefined,
+      guardianCode: role === "parent" && pjoin.mode === "join" ? pjoin.code : undefined,
     }),
     onSuccess: (user) => {
       qc.clear();
       qc.setQueryData(["/api/auth/me"], user);
+    qc.invalidateQueries({ queryKey: ["/api/auth/me"] });
       setLocation("/");
     },
     onError: (e) => setError(errorMessage(e)),
@@ -50,7 +53,7 @@ export default function WelcomePage() {
   }
 
   const name = username ?? data.suggestedUsername;
-  const ok = name.trim().length >= 3 && (role === "parent" || !!join.profileId);
+  const ok = name.trim().length >= 3 && (role === "parent" ? pjoin.valid : !!join.profileId);
 
   return (
     <AuthLayout>
@@ -64,13 +67,14 @@ export default function WelcomePage() {
       <form className="mt-6 grid gap-4" onSubmit={(e) => { e.preventDefault(); setError(""); if (ok) finish.mutate(); }}>
         <RolePicker role={role} onChange={setRole} />
         {role === "child" && <KidJoinFields onChange={setJoin} />}
+          {role === "parent" && <ParentJoinFields onChange={setPjoin} />}
         <div className="grid gap-1.5">
           <Label htmlFor="welcome-username">Pick a username</Label>
           <Input id="welcome-username" value={name} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" data-testid="input-welcome-username" />
           <p className="text-xs text-muted-foreground">Shown to your family. You'll sign in with Google, so no password needed.</p>
         </div>
         <Button type="submit" size="lg" className="h-12" disabled={!ok || finish.isPending} data-testid="button-finish-signup">
-          {finish.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? "Create family account" : "Join my family"}
+          {finish.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? (pjoin.mode === "join" ? "Join this family" : "Create family account") : "Join my family"}
         </Button>
         <Button type="button" variant="ghost" onClick={() => setLocation("/login")}>Cancel</Button>
       </form>

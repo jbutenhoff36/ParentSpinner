@@ -11,7 +11,7 @@ export type Role = "parent" | "child";
 
 export function RolePicker({ role, onChange }: { role: Role; onChange: (r: Role) => void }) {
   const opts: { value: Role; title: string; sub: string; icon: typeof Users }[] = [
-    { value: "parent", title: "I'm a parent", sub: "Start a family", icon: Users },
+    { value: "parent", title: "I'm a parent", sub: "Or grandparent, guardian", icon: Users },
     { value: "child", title: "I'm a kid", sub: "Join with a code", icon: Smile },
   ];
   return (
@@ -114,6 +114,77 @@ export function KidJoinFields({ onChange }: { onChange: (v: { code: string; prof
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export type ParentJoin = { mode: "new" | "join"; code: string; valid: boolean };
+
+/** Parent sign-up: start a new family, or join one with a family invite code. */
+export function ParentJoinFields({ onChange }: { onChange: (v: ParentJoin) => void }) {
+  const [mode, setMode] = useState<"new" | "join">("new");
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState<"idle" | "checking" | "bad" | "ok">("idle");
+  const [familyOf, setFamilyOf] = useState("");
+  const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  useEffect(() => {
+    onChange({ mode, code: clean, valid: mode === "new" || status === "ok" });
+  }, [mode, clean, status]);
+
+  useEffect(() => {
+    if (mode !== "join" || clean.length < 8) {
+      setStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setStatus("checking");
+    fetch(`/api/auth/verify-guardian-code?code=${encodeURIComponent(clean)}`)
+      .then(async (r) => {
+        if (cancelled) return;
+        const d = r.ok ? await r.json() : null;
+        if (d?.valid) {
+          setFamilyOf(d.familyOf);
+          setStatus("ok");
+        } else setStatus("bad");
+      })
+      .catch(() => !cancelled && setStatus("bad"));
+    return () => {
+      cancelled = true;
+    };
+  }, [clean, mode]);
+
+  const tab = (m: "new" | "join", label: string) => (
+    <button
+      type="button" role="radio" aria-checked={mode === m} onClick={() => setMode(m)} data-testid={`parent-mode-${m}`}
+      className={cn("flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors", mode === m ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground")}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="grid gap-3">
+      <div className="flex gap-1 rounded-xl bg-muted p-1" role="radiogroup" aria-label="Family">
+        {tab("new", "Start a new family")}
+        {tab("join", "Join a family")}
+      </div>
+      {mode === "join" && (
+        <div className="grid gap-1.5">
+          <Label htmlFor="guardian-code">Family invite code</Label>
+          <Input
+            id="guardian-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={9}
+            placeholder="ABCD-1234" autoCapitalize="characters" autoComplete="off" spellCheck={false}
+            className="font-mono text-lg tracking-[0.2em] uppercase" data-testid="input-guardian-code"
+          />
+          <p className={cn("text-xs", status === "bad" ? "text-destructive" : status === "ok" ? "font-semibold text-primary" : "text-muted-foreground")} data-testid="text-guardian-status">
+            {status === "checking" ? <><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />Checking…</>
+              : status === "bad" ? "That code doesn't match a family. Ask for a fresh one."
+              : status === "ok" ? `Joining ${familyOf}'s family as a parent`
+              : "Another parent can find it under Setup, Family."}
+          </p>
         </div>
       )}
     </div>

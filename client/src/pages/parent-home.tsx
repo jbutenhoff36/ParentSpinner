@@ -6,6 +6,7 @@ import { format, subDays } from "date-fns";
 import type { ChildProfile, GoodDayLog } from "@shared/schema";
 import { PageHeader } from "@/components/app-shell";
 import ApprovalsInbox from "@/components/ApprovalsInbox";
+import { NotificationsPrompt } from "@/components/notifications-card";
 import { InviteCard } from "@/components/invite-card";
 import { KidAvatar } from "@/components/kid-avatar";
 import { ProgressRing } from "@/components/progress-ring";
@@ -124,6 +125,7 @@ export default function ParentHome({ me }: { me: Me }) {
       </PageHeader>
 
       <ApprovalsInbox />
+      {kids.length > 0 && <NotificationsPrompt role="parent" />}
 
       <section aria-labelledby="kids-heading">
         <div className="mb-3 flex items-center justify-between">

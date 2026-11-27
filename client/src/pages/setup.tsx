@@ -4,6 +4,8 @@ import { Gift, Brush, Swords, Plus, Trash2, Check, Pencil, X } from "lucide-reac
 import type { Consequence } from "@shared/schema";
 import { PageHeader } from "@/components/app-shell";
 import { InviteCard } from "@/components/invite-card";
+import { FamilyCard } from "@/components/family-card";
+import { NotificationsSetting } from "@/components/notifications-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +22,7 @@ export default function SetupPage({ me }: { me: Me }) {
       <PageHeader eyebrow="Setup" title="Your family's rules" />
       <WheelsEditor />
       <GoalCard />
+      <FamilyCard />
       <InviteCard me={me} />
       <AccountCard me={me} />
     </div>
@@ -184,6 +187,7 @@ function AccountCard({ me }: { me: Me }) {
 
   return (
     <Section title="Your account" description={`Signed in as @${me.username}${me.email ? ` · ${me.email}` : ""}`}>
+      <div className="mb-4"><NotificationsSetting /></div>
       {providers?.google && (
         <div className="mb-6 flex flex-wrap items-center gap-3 rounded-2xl border p-4">
           <GoogleG />
