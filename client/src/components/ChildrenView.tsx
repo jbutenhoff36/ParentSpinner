@@ -245,15 +245,29 @@ export default function ChildrenView() {
       toast({ title: "Invalid file type", description: "Please select an image file", variant: "destructive" });
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result) {
-        const dataUrl = event.target.result as string;
+    // Shrink the photo to a 256px square so it saves quickly and stays small.
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const size = 256;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const side = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
         setAvatarPreview(dataUrl);
         setNewChildAvatar(dataUrl);
       }
+      URL.revokeObjectURL(url);
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      toast({ title: "Couldn't read that picture", description: "Please try a different image", variant: "destructive" });
+    };
+    img.src = url;
   };
 
   const clearImageSelection = () => {

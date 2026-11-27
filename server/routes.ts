@@ -186,6 +186,11 @@ function setupWebSocket(server: Server, sessionMiddleware: RequestHandler) {
 
 // ---------- validation ----------
 
+// Avatars are small data URLs (the browser shrinks photos first) or links.
+const avatarSchema = z.string().max(400_000, "That picture is too large")
+  .refine((v) => v === "" || v.startsWith("data:image/") || /^https?:\/\//.test(v), "Invalid picture")
+  .optional().nullable();
+
 const typeSchema = z.enum(["good", "bad", "fighting"]);
 
 const registerSchema = z.object({
@@ -316,7 +321,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   }));
 
   app.post("/api/children", requireParent, wrap(async (req, res) => {
-    const data = body(z.object({ name: z.string().trim().min(1, "Name is required").max(50), avatar: z.string().max(500).optional().nullable() }), req.body);
+    const data = body(z.object({ name: z.string().trim().min(1, "Name is required").max(50), avatar: avatarSchema }), req.body);
     const child = await storage.createChildProfile({ name: data.name, avatar: data.avatar ?? null, userId: req.user!.id });
     res.status(201).json(child);
   }));
@@ -325,7 +330,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     const child = await loadChild(req.user!, parseId(req.params.id));
     const data = body(z.object({
       name: z.string().trim().min(1).max(50).optional(),
-      avatar: z.string().max(500).optional().nullable(),
+      avatar: avatarSchema,
       active: z.boolean().optional(),
     }), req.body);
     res.json(await storage.updateChildProfile(child.id, data));
@@ -388,7 +393,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.post("/api/children/:id/badspin", requireParent, wrap(async (req, res) => {
     const child = await loadChild(req.user!, parseId(req.params.id));
-    res.json(await storage.updateChildProfile(child.id, { lastBadSpinDate: new Date() }));
+    res.json(await storage.updateChildProfile(child.id, { goodDayCount: 0, lastBadSpinDate: new Date() }));
   }));
 
   app.post("/api/children/:id/reset-spins", requireParent, wrap(async (req, res) => {
