@@ -8,13 +8,16 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { storage, db } from "./storage";
 import {
-  childProfiles, goodDayLog, spinRequests, spins, pendingConsequences,
+  childProfiles, goodDayLog, spinRequests, spins, pendingConsequences, users,
   type ChildProfile, type User,
 } from "@shared/schema";
 
 declare module "express-session" {
   interface SessionData {
     userId?: number;
+    oauthState?: string;
+    oauthMode?: "login" | "link";
+    googlePending?: { sub: string; email: string | null; name: string | null; at: number };
   }
 }
 
@@ -102,8 +105,8 @@ const registerLimit = rateLimiter(20, 60 * 60 * 1000, "Too many sign-ups from th
 const codeLimit = rateLimiter(30, 15 * 60 * 1000, "Too many code checks. Please wait a few minutes and try again.");
 
 function publicUser(user: User) {
-  const { password: _pw, ...rest } = user;
-  return rest;
+  const { password, googleSub, ...rest } = user;
+  return { ...rest, hasPassword: !!password, googleLinked: !!googleSub };
 }
 
 /** The family a user belongs to: a parent's own ID, or a child's parent ID */
@@ -114,6 +117,40 @@ function familyIdOf(user: User): number {
 function todayKey(): string {
   // Calendar day in the family's time zone (APP_TIMEZONE, else the server's).
   return new Date().toLocaleDateString("en-CA", { timeZone: process.env.APP_TIMEZONE || undefined });
+}
+
+const dayKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date like 2026-01-31");
+
+/** Good days can be logged for today or a missed day in the last two weeks. */
+function checkLoggableDay(day: string) {
+  const today = todayKey();
+  if (day > today) throw new HttpError(400, "You can't log a good day in the future");
+  const earliest = new Date(`${today}T12:00:00Z`);
+  earliest.setUTCDate(earliest.getUTCDate() - 14);
+  if (day < earliest.toISOString().slice(0, 10)) throw new HttpError(400, "You can only log good days from the last two weeks");
+}
+
+type Tx = Pick<typeof db, "update" | "select">;
+
+/**
+ * Turns every full set of good days into an earned spin and keeps the rest,
+ * so reaching the goal always earns a spin however the count got there.
+ */
+async function settleSpins(tx: Tx, childId: number, required: number) {
+  const r = Math.max(1, required);
+  const [before] = await tx.select().from(childProfiles).where(eq(childProfiles.id, childId));
+  const newSpins = Math.floor(before.goodDayCount / r);
+  if (newSpins === 0) return { child: before, newSpins };
+  const [child] = await tx.update(childProfiles).set({
+    earnedSpins: sql`${childProfiles.earnedSpins} + ${newSpins}`,
+    goodDayCount: before.goodDayCount % r,
+  }).where(eq(childProfiles.id, childId)).returning();
+  return { child, newSpins };
+}
+
+async function goodDaysRequiredFor(familyId: number) {
+  const config = await storage.getConfiguration(familyId);
+  return Math.max(1, config.goodDaysRequired || 7);
 }
 
 class HttpError extends Error {
@@ -269,9 +306,12 @@ function body<S extends z.ZodTypeAny>(schema: S, data: unknown): z.output<S> {
 export async function registerRoutes(app: Express, sessionMiddleware: RequestHandler): Promise<Server> {
   // ----- auth (public) -----
 
-  app.post("/api/auth/register", wrap(async (req, res) => {
-    registerLimit(req.ip || "unknown");
-    const data = body(registerSchema, req.body);
+  /** Creates a parent (new family) or a child (linked by parent code) and logs them in. */
+  async function createAccount(req: Request, data: {
+    username: string; passwordHash: string | null; googleSub?: string | null; displayName?: string | null;
+    role: "parent" | "child"; parentCode?: string | null; childProfileId?: string | number | null;
+    email?: string | null; notifyOnSpin?: boolean | null; notifyOnPending?: boolean | null;
+  }) {
     if (await storage.getUserByUsername(data.username)) {
       throw new HttpError(409, "That username is already taken");
     }
@@ -291,16 +331,20 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
     let user = await storage.createUser({
       username: data.username,
-      password: await hashPassword(data.password),
+      password: data.passwordHash,
       role: data.role,
       parentId,
       email: data.email || null,
       notifyOnSpin: data.notifyOnSpin ?? true,
       notifyOnPending: data.notifyOnPending ?? true,
     });
+    if (data.googleSub || data.displayName) {
+      user = (await storage.updateUser(user.id, { googleSub: data.googleSub ?? null, displayName: data.displayName ?? null })) || user;
+    }
 
     if (profile) {
       await storage.updateChildProfile(profile.id, { childUserId: user.id });
+      notifyUser(parentId, "Account linked", `${profile.name} made their own account and can now sign in.`, "info");
     } else {
       user = await ensureJoinCode(user);
       await storage.ensureFamilyDefaults(user.id);
@@ -308,6 +352,138 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     }
 
     await startSession(req, user.id);
+    return user;
+  }
+
+  app.post("/api/auth/register", wrap(async (req, res) => {
+    registerLimit(req.ip || "unknown");
+    const data = body(registerSchema, req.body);
+    const user = await createAccount(req, { ...data, passwordHash: await hashPassword(data.password) });
+    res.status(201).json(publicUser(user));
+  }));
+
+  // ----- Sign in with Google (OAuth 2.0 authorization-code flow) -----
+
+  const google = {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    // Overridable only so the flow can be tested against a fake Google.
+    authUrl: process.env.GOOGLE_AUTH_URL || "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: process.env.GOOGLE_TOKEN_URL || "https://oauth2.googleapis.com/token",
+    userInfoUrl: process.env.GOOGLE_USERINFO_URL || "https://openidconnect.googleapis.com/v1/userinfo",
+  };
+  const googleEnabled = () => !!(google.clientId && google.clientSecret);
+  const appUrl = (req: Request) => (process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const googleRedirectUri = (req: Request) => `${appUrl(req)}/api/auth/google/callback`;
+
+  app.get("/api/auth/providers", (_req, res) => {
+    res.json({ google: googleEnabled() });
+  });
+
+  app.get("/api/auth/google", wrap(async (req, res) => {
+    if (!googleEnabled()) throw new HttpError(404, "Sign in with Google isn't set up yet");
+    const mode = req.query.mode === "link" && req.session.userId ? "link" : "login";
+    const state = randomBytes(24).toString("hex");
+    req.session.oauthState = state;
+    req.session.oauthMode = mode;
+    await new Promise<void>((resolve, reject) => req.session.save((e) => (e ? reject(e) : resolve())));
+    const params = new URLSearchParams({
+      client_id: google.clientId!,
+      redirect_uri: googleRedirectUri(req),
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      prompt: "select_account",
+    });
+    res.redirect(`${google.authUrl}?${params}`);
+  }));
+
+  app.get("/api/auth/google/callback", wrap(async (req, res) => {
+    const fail = (reason: string) => res.redirect(`/login?error=${encodeURIComponent(reason)}`);
+    const { code, state, error } = req.query as Record<string, string | undefined>;
+    const expected = req.session.oauthState;
+    const mode = req.session.oauthMode || "login";
+    delete req.session.oauthState;
+    delete req.session.oauthMode;
+    if (error) return fail("Google sign-in was cancelled.");
+    if (!code || !state || !expected || state.length !== expected.length ||
+        !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) {
+      return fail("That sign-in link expired. Please try again.");
+    }
+
+    const tokenRes = await fetch(google.tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code, client_id: google.clientId!, client_secret: google.clientSecret!,
+        redirect_uri: googleRedirectUri(req), grant_type: "authorization_code",
+      }),
+    });
+    if (!tokenRes.ok) {
+      console.error("Google token exchange failed:", tokenRes.status, await tokenRes.text().catch(() => ""));
+      return fail("Google sign-in didn't work. Please try again.");
+    }
+    const { access_token } = (await tokenRes.json()) as { access_token?: string };
+    const infoRes = await fetch(google.userInfoUrl, { headers: { Authorization: `Bearer ${access_token}` } });
+    if (!infoRes.ok) return fail("Couldn't read your Google profile. Please try again.");
+    const info = (await infoRes.json()) as { sub?: string; email?: string; email_verified?: boolean; name?: string };
+    if (!info.sub) return fail("Couldn't read your Google profile. Please try again.");
+
+    const [existing] = await db.select().from(users).where(eq(users.googleSub, info.sub));
+
+    if (mode === "link" && req.session.userId) {
+      if (existing && existing.id !== req.session.userId) {
+        return res.redirect("/?google=" + encodeURIComponent("That Google account is already used by another login."));
+      }
+      await storage.updateUser(req.session.userId, { googleSub: info.sub });
+      return res.redirect("/?google=linked");
+    }
+
+    if (existing) {
+      await storage.updateUser(existing.id, { lastLogin: new Date() });
+      await startSession(req, existing.id);
+      return res.redirect("/");
+    }
+
+    // New person: remember who Google says they are, then ask parent or kid.
+    req.session.googlePending = {
+      sub: info.sub,
+      email: info.email_verified ? info.email ?? null : null,
+      name: info.name ?? null,
+      at: Date.now(),
+    };
+    await new Promise<void>((resolve, reject) => req.session.save((e) => (e ? reject(e) : resolve())));
+    res.redirect("/welcome");
+  }));
+
+  function pendingGoogle(req: Request) {
+    const p = req.session.googlePending;
+    if (!p || Date.now() - p.at > 30 * 60 * 1000) throw new HttpError(404, "Please sign in with Google again");
+    return p;
+  }
+
+  app.get("/api/auth/google/pending", wrap(async (req, res) => {
+    const p = pendingGoogle(req);
+    const base = (p.name || p.email?.split("@")[0] || "user").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 20) || "user";
+    let suggestion = base.length >= 3 ? base : `${base}123`;
+    for (let i = 2; await storage.getUserByUsername(suggestion); i++) suggestion = `${base}${i}`;
+    res.json({ name: p.name, email: p.email, suggestedUsername: suggestion });
+  }));
+
+  app.post("/api/auth/google/complete", wrap(async (req, res) => {
+    registerLimit(req.ip || "unknown");
+    const p = pendingGoogle(req);
+    const data = body(z.object({
+      username: z.string().trim().min(3, "Username must be at least 3 characters").max(50),
+      role: z.enum(["parent", "child"]),
+      parentCode: z.string().optional().nullable(),
+      childProfileId: z.union([z.string(), z.number()]).optional().nullable(),
+    }), req.body);
+    const [taken] = await db.select({ id: users.id }).from(users).where(eq(users.googleSub, p.sub));
+    if (taken) throw new HttpError(409, "This Google account already has a login");
+    const user = await createAccount(req, {
+      ...data, passwordHash: null, googleSub: p.sub, displayName: p.name, email: p.email,
+    });
     res.status(201).json(publicUser(user));
   }));
 
@@ -318,12 +494,15 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     );
     loginLimit(`${req.ip}|${username.toLowerCase()}`);
     const user = await storage.getUserByUsername(username);
-    if (!user || !(await verifyPassword(password, user.password))) {
+    if (user && !user.password) {
+      throw new HttpError(401, "This account uses Sign in with Google. Tap \"Continue with Google\" instead.");
+    }
+    if (!user || !(await verifyPassword(password, user.password!))) {
       throw new HttpError(401, "Wrong username or password");
     }
     // Upgrade any old plain-text password on the way in.
     const updates: Partial<User> = { lastLogin: new Date() };
-    if (!user.password.startsWith("scrypt:")) updates.password = await hashPassword(password);
+    if (!user.password!.startsWith("scrypt:")) updates.password = await hashPassword(password);
     const updated = (await storage.updateUser(user.id, updates)) || user;
     await startSession(req, user.id);
     res.json(publicUser(updated));
@@ -355,6 +534,25 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.get("/api/auth/me", wrap(async (req, res) => {
     res.json(publicUser(await ensureJoinCode(req.user!)));
+  }));
+
+  app.post("/api/auth/google/unlink", wrap(async (req, res) => {
+    if (!req.user!.password) throw new HttpError(400, "Set a password first, or you won't be able to sign in");
+    res.json(publicUser((await storage.updateUser(req.user!.id, { googleSub: null }))!));
+  }));
+
+  // Set or change your own password (Google-only accounts can add one here)
+  app.post("/api/auth/password", wrap(async (req, res) => {
+    const data = body(z.object({
+      currentPassword: z.string().optional(),
+      newPassword: z.string().min(6, "Password must be at least 6 characters").max(200),
+    }), req.body);
+    const user = req.user!;
+    if (user.password && !(data.currentPassword && (await verifyPassword(data.currentPassword, user.password)))) {
+      throw new HttpError(400, "Your current password is wrong");
+    }
+    await storage.updateUser(user.id, { password: await hashPassword(data.newPassword) });
+    res.json({ message: "Password saved" });
   }));
 
   // Parent: get a fresh join code (the old one stops working)
@@ -433,21 +631,17 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
 
   app.post("/api/children/:id/goodday", requireParent, wrap(async (req, res) => {
     const child = await loadChild(req.user!, parseId(req.params.id));
-    const config = await storage.getConfiguration(req.user!.id);
-    const required = Math.max(1, config.goodDaysRequired || 7);
-    const day = todayKey();
+    const required = await goodDaysRequiredFor(req.user!.id);
+    const { day = todayKey() } = body(z.object({ day: dayKeySchema.optional() }), req.body ?? {});
+    checkLoggableDay(day);
 
     try {
       const result = await db.transaction(async (tx) => {
         const [log] = await tx.insert(goodDayLog).values({ childId: child.id, userId: req.user!.id, day }).returning();
-        const newCount = child.goodDayCount + 1;
-        const earned = newCount >= required;
-        const [updated] = await tx.update(childProfiles).set(
-          earned
-            ? { goodDayCount: 0, earnedSpins: sql`${childProfiles.earnedSpins} + 1` }
-            : { goodDayCount: newCount },
-        ).where(eq(childProfiles.id, child.id)).returning();
-        return { log, child: updated, isSpinAvailable: earned };
+        await tx.update(childProfiles).set({ goodDayCount: sql`${childProfiles.goodDayCount} + 1` })
+          .where(eq(childProfiles.id, child.id));
+        const { child: updated, newSpins } = await settleSpins(tx, child.id, required);
+        return { log, child: updated, isSpinAvailable: newSpins > 0 };
       });
 
       if (req.query.skipNotifications !== "true") {
@@ -465,9 +659,38 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
         message: result.isSpinAvailable ? `${child.name} earned a spin!` : "Good day logged",
       });
     } catch (err: any) {
-      if (err?.code === "23505") throw new HttpError(409, "Already logged a good day today");
+      if (err?.code === "23505") {
+        throw new HttpError(409, day === todayKey() ? "Already logged a good day today" : `Already logged a good day on ${day}`);
+      }
       throw err;
     }
+  }));
+
+  // Undo a good day logged by mistake. If it had just turned into a spin, the spin goes back too.
+  app.delete("/api/children/:id/goodday/:day", requireParent, wrap(async (req, res) => {
+    const child = await loadChild(req.user!, parseId(req.params.id));
+    const day = body(dayKeySchema, req.params.day);
+    const required = await goodDaysRequiredFor(req.user!.id);
+    const updated = await db.transaction(async (tx) => {
+      const [removed] = await tx.delete(goodDayLog)
+        .where(and(eq(goodDayLog.childId, child.id), eq(goodDayLog.day, day))).returning();
+      if (!removed) throw new HttpError(404, "No good day logged on that day");
+      const [current] = await tx.select().from(childProfiles).where(eq(childProfiles.id, child.id)).for("update");
+      if (current.goodDayCount > 0) {
+        const [c] = await tx.update(childProfiles).set({ goodDayCount: current.goodDayCount - 1 })
+          .where(eq(childProfiles.id, child.id)).returning();
+        return c;
+      }
+      const waiting = await storage.countPendingGoodRequests(child.id);
+      if (current.earnedSpins - waiting <= 0) {
+        throw new HttpError(409, "That good day already became a spin that was used, so it can't be undone");
+      }
+      const [c] = await tx.update(childProfiles)
+        .set({ earnedSpins: current.earnedSpins - 1, goodDayCount: required - 1 })
+        .where(eq(childProfiles.id, child.id)).returning();
+      return c;
+    });
+    res.json(updated);
   }));
 
   app.post("/api/children/:id/badspin", requireParent, wrap(async (req, res) => {
@@ -498,7 +721,10 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       if (k === "createdAt" && v === null) continue;
       (updates as any)[k] = v;
     }
-    res.json(await storage.updateChildProfile(child.id, updates));
+    await storage.updateChildProfile(child.id, updates);
+    // Reaching the good-day goal by editing the count still earns the spin(s).
+    const { child: updated } = await settleSpins(db, child.id, await goodDaysRequiredFor(req.user!.id));
+    res.json(updated);
   }));
 
   // ----- consequences (the family's wheels) -----
@@ -600,7 +826,15 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       notificationsEnabled: z.boolean().optional(),
     }), req.body);
     const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-    res.json(await storage.saveConfiguration(req.user!.id, clean));
+    const saved = await storage.saveConfiguration(req.user!.id, clean);
+    // Lowering the goal can mean some kids have already reached it.
+    if (data.goodDaysRequired) {
+      for (const c of await storage.getChildProfiles(req.user!.id)) {
+        const { newSpins } = await settleSpins(db, c.id, saved.goodDaysRequired);
+        if (newSpins > 0) notifyUser(c.childUserId, "You earned a spin!", "Great job! You earned a Good Spin.", "goodDay");
+      }
+    }
+    res.json(saved);
   }));
 
   // ----- spins (server picks the result) -----

@@ -15,14 +15,14 @@ export interface Notification {
   action?: string;
 }
 
-const notificationVariants = cva("relative mb-2 transition-all duration-300 transform", {
+const notificationVariants = cva("relative rounded-2xl border bg-card pl-5 pr-9 py-3.5 shadow-xl animate-rise before:absolute before:left-0 before:top-3 before:bottom-3 before:w-1 before:rounded-r-full", {
   variants: {
     type: {
-      spin: "bg-blue-50 border-blue-200 text-blue-800",
-      goodDay: "bg-green-50 border-green-200 text-green-800",
-      info: "bg-amber-50 border-amber-200 text-amber-800",
-      success: "bg-green-50 border-green-200 text-green-800",
-      warning: "bg-yellow-50 border-yellow-200 text-yellow-800",
+      spin: "before:bg-primary",
+      goodDay: "before:bg-success",
+      info: "before:bg-primary",
+      success: "before:bg-success",
+      warning: "before:bg-reward",
     },
   },
   defaultVariants: { type: "info" },
@@ -66,7 +66,7 @@ export const NotificationItem = ({ notification, onDismiss }: { notification: No
 export const NotificationCenter = ({ notifications, onDismiss }: { notifications: Notification[]; onDismiss: (id: string) => void }) => {
   if (notifications.length === 0) return null;
   return (
-    <div className="fixed top-4 right-4 w-80 max-w-[calc(100vw-2rem)] z-50 space-y-2 max-h-[80vh] overflow-y-auto p-2">
+    <div className="fixed top-3 inset-x-3 sm:inset-x-auto sm:right-4 sm:w-80 z-50 space-y-2 max-h-[80vh] overflow-y-auto" role="status" aria-live="polite">
       {notifications.map(notification => (
         <NotificationItem key={notification.id} notification={notification} onDismiss={onDismiss} />
       ))}

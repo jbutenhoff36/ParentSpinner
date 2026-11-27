@@ -6,16 +6,21 @@ import { z } from "zod";
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+  password: text("password"), // null for accounts that only use Sign in with Google
   role: text("role").notNull().default("parent"), // "parent" or "child"
   parentId: integer("parent_id").references((): any => users.id), // For child accounts, references their parent
   email: text("email"), // For notifications
   joinCode: text("join_code"), // Parents: code kids use to link their account
+  googleSub: text("google_sub"), // Google account ID, for Sign in with Google
+  displayName: text("display_name"),
   notifyOnSpin: boolean("notify_on_spin").default(true),
   notifyOnPending: boolean("notify_on_pending").default(true),
   lastLogin: timestamp("last_login").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (t) => [uniqueIndex("users_join_code_idx").on(t.joinCode)]);
+}, (t) => [
+  uniqueIndex("users_join_code_idx").on(t.joinCode),
+  uniqueIndex("users_google_sub_idx").on(t.googleSub),
+]);
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

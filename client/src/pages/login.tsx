@@ -1,353 +1,129 @@
-import { useState } from 'react';
-import { useLocation } from 'wouter';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useToast } from '@/hooks/use-toast';
-import { authService, UserWithoutPassword } from '@/lib/auth-service';
-import { FamilyStarLogo } from '@/components/ui/family-star-logo';
-import { Loader2 } from 'lucide-react';
-
-const loginSchema = z.object({
-  username: z.string().min(1, 'Username is required'),
-  password: z.string().min(1, 'Password is required'),
-});
-
-const registerSchema = z.object({
-  username: z.string().min(3, 'Username must be at least 3 characters'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  role: z.enum(['parent', 'child']),
-  parentCode: z.string().optional(),
-  childProfileId: z.string().optional(),
-  email: z.string().email('Invalid email').optional().nullable().or(z.literal('')),
-  notifyOnSpin: z.boolean().optional().nullable(),
-  notifyOnPending: z.boolean().optional().nullable(),
-});
+import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { AuthLayout, KidJoinFields, RolePicker, type Role } from "@/components/auth-parts";
+import { GoogleG } from "@/pages/setup";
+import { apiRequest } from "@/lib/queryClient";
+import { errorMessage, type Me } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
   const [, setLocation] = useLocation();
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
-  const [showParentCodeField, setShowParentCodeField] = useState(false);
-  const [unlinkedChildProfiles, setUnlinkedChildProfiles] = useState<any[]>([]);
-  const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
-  const [selectedChildProfileId, setSelectedChildProfileId] = useState<string>('');
-  const [parentCodeMessage, setParentCodeMessage] = useState<string>('');
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<"signin" | "signup">(() => (new URLSearchParams(window.location.search).get("mode") === "signup" ? "signup" : "signin"));
+  const [error, setError] = useState(() => new URLSearchParams(window.location.search).get("error") || "");
+  const [role, setRole] = useState<Role>("parent");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
+  const [join, setJoin] = useState<{ code: string; profileId: number | null }>({ code: "", profileId: null });
+  const { data: providers } = useQuery<{ google: boolean }>({ queryKey: ["/api/auth/providers"] });
 
-  const loginForm = useForm<z.infer<typeof loginSchema>>({
-    resolver: zodResolver(loginSchema),
-    defaultValues: { username: '', password: '' },
-  });
+  useEffect(() => {
+    if (window.location.search) window.history.replaceState(null, "", "/login");
+  }, []);
 
-  const registerForm = useForm<z.infer<typeof registerSchema>>({
-    resolver: zodResolver(registerSchema),
-    defaultValues: {
-      username: '',
-      password: '',
-      role: 'parent',
-      parentCode: '',
-      email: '',
-      notifyOnSpin: true,
-      notifyOnPending: true,
-    },
-  });
-
-  // After login or signup, drop everything cached for the previous (or no) user.
-  const startSession = (user: UserWithoutPassword) => {
-    queryClient.clear();
-    queryClient.setQueryData(['currentUser'], user);
-    setLocation('/');
+  const done = (user: Me) => {
+    qc.clear();
+    qc.setQueryData(["/api/auth/me"], user);
+    setLocation("/");
   };
 
-  const handleRoleChange = (role: string) => {
-    setShowParentCodeField(role === 'child');
-    registerForm.setValue('role', role as 'parent' | 'child');
-    setUnlinkedChildProfiles([]);
-    setSelectedChildProfileId('');
-    setParentCodeMessage('');
-    registerForm.setValue('parentCode', '');
-  };
-
-  const handleParentCodeChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const parentCode = e.target.value;
-    registerForm.setValue('parentCode', parentCode);
-
-    const cleanCode = parentCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (cleanCode.length < 6) {
-      setUnlinkedChildProfiles([]);
-      setSelectedChildProfileId('');
-      setParentCodeMessage('');
-      return;
-    }
-
-    try {
-      setIsLoadingProfiles(true);
-      setParentCodeMessage('');
-      const parentResponse = await fetch(`/api/auth/verify-parent-code?code=${encodeURIComponent(cleanCode)}`);
-      if (!parentResponse.ok) {
-        setParentCodeMessage('✗ Invalid parent code');
-        setUnlinkedChildProfiles([]);
-        setSelectedChildProfileId('');
-        return;
-      }
-      const parentData = await parentResponse.json();
-      setUnlinkedChildProfiles(parentData.unlinkedChildProfiles || []);
-      setParentCodeMessage(parentData.unlinkedChildProfiles?.length > 0
-        ? `✓ Found ${parentData.unlinkedChildProfiles.length} available profile(s)`
-        : '✓ Valid parent, but no unlinked profiles');
-    } catch {
-      setParentCodeMessage('Error verifying parent code');
-      setUnlinkedChildProfiles([]);
-    } finally {
-      setIsLoadingProfiles(false);
-    }
-  };
-
-  const loginMutation = useMutation({
-    mutationFn: (data: z.infer<typeof loginSchema>) => authService.login(data.username, data.password),
-    onSuccess: (user) => {
-      toast({ title: "Login successful", description: "Welcome back!" });
-      startSession(user);
-    },
-    onError: (error: any) => {
-      toast({ title: "Login failed", description: error.message || "Invalid credentials", variant: "destructive" });
-    },
+  const signIn = useMutation({
+    mutationFn: () => apiRequest<Me>("POST", "/api/auth/login", { username, password }),
+    onSuccess: done,
+    onError: (e) => setError(errorMessage(e)),
+  });
+  const signUp = useMutation({
+    mutationFn: () =>
+      apiRequest<Me>("POST", "/api/auth/register", {
+        username, password, role, email: role === "parent" ? email : undefined,
+        parentCode: role === "child" ? join.code : undefined,
+        childProfileId: role === "child" ? join.profileId : undefined,
+      }),
+    onSuccess: done,
+    onError: (e) => setError(errorMessage(e)),
   });
 
-  const registerMutation = useMutation({
-    mutationFn: async (data: z.infer<typeof registerSchema>) => {
-      if (data.role === 'child') {
-        if (!data.parentCode) throw new Error('Parent code is required for child accounts');
-        if (!selectedChildProfileId) throw new Error('Please select a child profile');
-        data.childProfileId = selectedChildProfileId;
-      }
-      return authService.register(data);
-    },
-    onSuccess: (user) => {
-      toast({ title: "Registration successful", description: "Welcome to the app!" });
-      startSession(user);
-    },
-    onError: (error: any) => {
-      toast({ title: "Registration failed", description: error.message || "Registration failed", variant: "destructive" });
-    },
-  });
-
-  const onLoginSubmit = (data: z.infer<typeof loginSchema>) => loginMutation.mutate(data);
-
-  const onRegisterSubmit = (data: z.infer<typeof registerSchema>) => {
-    if (data.role === 'child') {
-      if (!selectedChildProfileId) {
-        toast({
-          title: "Profile required",
-          description: "Please select a child profile to link your account to.",
-          variant: "destructive",
-        });
-        return;
-      }
-      data.childProfileId = selectedChildProfileId;
-    }
-    registerMutation.mutate(data);
-  };
+  const busy = signIn.isPending || signUp.isPending;
+  const canSignUp = username.trim().length >= 3 && password.length >= 6 && (role === "parent" || !!join.profileId);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
-        <div className="text-center lg:text-left space-y-6">
-          <div className="flex justify-center lg:justify-start">
-            <FamilyStarLogo className="w-16 h-16" />
-          </div>
-          <h1 className="text-4xl lg:text-5xl font-bold text-gray-900">
-            Family Behavior
-            <span className="block text-indigo-600">Tracker</span>
-          </h1>
-          <p className="text-xl text-gray-600 leading-relaxed">
-            Transform behavior management into an engaging, gamified experience.
-            Track good days, earn rewards, and build positive habits together.
-          </p>
-          <div className="space-y-4 text-left">
-            <div className="flex items-start space-x-3">
-              <div className="w-2 h-2 bg-indigo-500 rounded-full mt-2"></div>
-              <div>
-                <h3 className="font-semibold text-gray-800">Interactive Spinning Wheel</h3>
-                <p className="text-gray-600">Physics-based rewards and consequences system</p>
-              </div>
-            </div>
-            <div className="flex items-start space-x-3">
-              <div className="w-2 h-2 bg-indigo-500 rounded-full mt-2"></div>
-              <div>
-                <h3 className="font-semibold text-gray-800">Real-time Notifications</h3>
-                <p className="text-gray-600">Stay connected with instant updates and achievements</p>
-              </div>
-            </div>
-            <div className="flex items-start space-x-3">
-              <div className="w-2 h-2 bg-indigo-500 rounded-full mt-2"></div>
-              <div>
-                <h3 className="font-semibold text-gray-800">Parent-Child Connection</h3>
-                <p className="text-gray-600">Secure linking system with unique parent codes</p>
-              </div>
-            </div>
-          </div>
-        </div>
+    <AuthLayout>
+      <h1 className="text-3xl font-extrabold">{mode === "signin" ? "Welcome back" : "Create your account"}</h1>
+      <p className="mt-1 text-muted-foreground">{mode === "signin" ? "Sign in to see today's progress." : "Takes less than a minute."}</p>
 
-        <div className="w-full max-w-md mx-auto">
-          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'login' | 'register')}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="login">Login</TabsTrigger>
-              <TabsTrigger value="register">Register</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="login">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Welcome Back</CardTitle>
-                  <CardDescription>Sign in to your account to continue</CardDescription>
-                </CardHeader>
-                <form onSubmit={loginForm.handleSubmit(onLoginSubmit)}>
-                  <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="login-username">Username</Label>
-                      <Input id="login-username" type="text" placeholder="Enter your username" {...loginForm.register('username')} />
-                      {loginForm.formState.errors.username && (
-                        <p className="text-sm text-red-600">{loginForm.formState.errors.username.message}</p>
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="login-password">Password</Label>
-                      <Input id="login-password" type="password" placeholder="Enter your password" {...loginForm.register('password')} />
-                      {loginForm.formState.errors.password && (
-                        <p className="text-sm text-red-600">{loginForm.formState.errors.password.message}</p>
-                      )}
-                    </div>
-                  </CardContent>
-                  <CardFooter>
-                    <Button type="submit" className="w-full" disabled={loginMutation.isPending} data-testid="button-login">
-                      {loginMutation.isPending ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Signing in...
-                        </>
-                      ) : (
-                        'Sign In'
-                      )}
-                    </Button>
-                  </CardFooter>
-                </form>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="register">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Create Account</CardTitle>
-                  <CardDescription>Join the family behavior tracking system</CardDescription>
-                </CardHeader>
-                <form onSubmit={registerForm.handleSubmit(onRegisterSubmit)}>
-                  <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="register-username">Username</Label>
-                      <Input id="register-username" type="text" placeholder="Choose a username" {...registerForm.register('username')} />
-                      {registerForm.formState.errors.username && (
-                        <p className="text-sm text-red-600">{registerForm.formState.errors.username.message}</p>
-                      )}
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="register-password">Password</Label>
-                      <Input id="register-password" type="password" placeholder="Create a password" {...registerForm.register('password')} />
-                      {registerForm.formState.errors.password && (
-                        <p className="text-sm text-red-600">{registerForm.formState.errors.password.message}</p>
-                      )}
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="register-role">Account Type</Label>
-                      <Select value={registerForm.watch('role')} onValueChange={handleRoleChange}>
-                        <SelectTrigger id="register-role" data-testid="select-role">
-                          <SelectValue placeholder="Select account type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="parent">Parent</SelectItem>
-                          <SelectItem value="child">Child</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {showParentCodeField && (
-                      <>
-                        <div className="space-y-2">
-                          <Label htmlFor="parent-code">Parent Code</Label>
-                          <Input
-                            id="parent-code"
-                            type="text"
-                            placeholder="6-letter code from your parent"
-                            maxLength={8}
-                            autoCapitalize="characters"
-                            data-testid="input-parent-code"
-                            onChange={handleParentCodeChange}
-                          />
-                          {isLoadingProfiles && (
-                            <div className="flex items-center text-sm text-gray-500">
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              Loading profiles...
-                            </div>
-                          )}
-                          {parentCodeMessage && <p className="text-sm text-blue-600">{parentCodeMessage}</p>}
-                        </div>
-
-                        {unlinkedChildProfiles.length > 0 && (
-                          <div className="space-y-2">
-                            <Label htmlFor="child-profile">Select Your Profile</Label>
-                            <Select value={selectedChildProfileId} onValueChange={setSelectedChildProfileId}>
-                              <SelectTrigger id="child-profile" data-testid="select-child-profile">
-                                <SelectValue placeholder="Choose your profile" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {unlinkedChildProfiles.map((profile) => (
-                                  <SelectItem key={profile.id} value={profile.id.toString()}>
-                                    {profile.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    <div className="space-y-2">
-                      <Label htmlFor="register-email">Email (Optional)</Label>
-                      <Input id="register-email" type="email" placeholder="your@email.com" {...registerForm.register('email')} />
-                      {registerForm.formState.errors.email && (
-                        <p className="text-sm text-red-600">{registerForm.formState.errors.email.message}</p>
-                      )}
-                    </div>
-                  </CardContent>
-                  <CardFooter>
-                    <Button type="submit" className="w-full" disabled={registerMutation.isPending} data-testid="button-register">
-                      {registerMutation.isPending ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Creating account...
-                        </>
-                      ) : (
-                        'Create Account'
-                      )}
-                    </Button>
-                  </CardFooter>
-                </form>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        </div>
+      <div className="mt-6 grid grid-cols-2 gap-1 rounded-2xl bg-muted p-1">
+        {(["signin", "signup"] as const).map((m) => (
+          <button
+            key={m} type="button" onClick={() => { setMode(m); setError(""); }} aria-pressed={mode === m}
+            data-testid={`tab-${m}`}
+            className={cn("rounded-xl py-2 text-sm font-semibold", mode === m ? "bg-card shadow-sm" : "text-muted-foreground")}
+          >
+            {m === "signin" ? "Sign in" : "Sign up"}
+          </button>
+        ))}
       </div>
-    </div>
+
+      {error && (
+        <p role="alert" className="mt-4 flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive" data-testid="text-auth-error">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {error}
+        </p>
+      )}
+
+      {providers?.google && (
+        <>
+          <Button asChild variant="outline" size="lg" className="mt-5 h-12 w-full text-[15px]" data-testid="button-google">
+            <a href="/api/auth/google"><GoogleG /> Continue with Google</a>
+          </Button>
+          <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="h-px flex-1 bg-border" /> or with a username <span className="h-px flex-1 bg-border" />
+          </div>
+        </>
+      )}
+
+      {mode === "signin" ? (
+        <form className={cn("grid gap-4", !providers?.google && "mt-6")} onSubmit={(e) => { e.preventDefault(); setError(""); signIn.mutate(); }}>
+          <div className="grid gap-1.5">
+            <Label htmlFor="login-username">Username</Label>
+            <Input id="login-username" name="username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="login-password">Password</Label>
+            <Input id="login-password" name="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </div>
+          <Button type="submit" size="lg" className="mt-1 h-12" disabled={busy || !username || !password} data-testid="button-login">
+            {signIn.isPending ? <Loader2 className="animate-spin" /> : "Sign in"}
+          </Button>
+          <p className="text-center text-xs text-muted-foreground">Kid forgot their password? A parent can set a new one from their Home screen.</p>
+        </form>
+      ) : (
+        <form className={cn("grid gap-4", !providers?.google && "mt-6")} onSubmit={(e) => { e.preventDefault(); setError(""); if (canSignUp) signUp.mutate(); }}>
+          <RolePicker role={role} onChange={setRole} />
+          {role === "child" && <KidJoinFields onChange={setJoin} />}
+          <div className="grid gap-1.5">
+            <Label htmlFor="register-username">Username</Label>
+            <Input id="register-username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="At least 3 characters" />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="register-password">Password</Label>
+            <Input id="register-password" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 6 characters" />
+          </div>
+          {role === "parent" && (
+            <div className="grid gap-1.5">
+              <Label htmlFor="register-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label>
+              <Input id="register-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            </div>
+          )}
+          <Button type="submit" size="lg" className="mt-1 h-12" disabled={busy || !canSignUp} data-testid="button-register">
+            {signUp.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? "Create family account" : "Join my family"}
+          </Button>
+        </form>
+      )}
+    </AuthLayout>
   );
 }

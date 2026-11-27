@@ -1,53 +1,41 @@
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { useToast } from '@/hooks/use-toast';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { spinRequestService } from '@/lib/spin-request-service';
-import { CheckCircle, XCircle, Inbox } from 'lucide-react';
-
-function errorMessage(error: unknown, fallback: string): string {
-  if (!(error instanceof Error)) return fallback;
-  const match = error.message.match(/^\d+: (.*)$/s);
-  if (match) {
-    try {
-      return JSON.parse(match[1]).message || fallback;
-    } catch {
-      return match[1] || fallback;
-    }
-  }
-  return error.message || fallback;
-}
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { spinRequestService } from "@/lib/spin-request-service";
+import { Check, Gift } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { errorMessage } from "@/lib/api";
 
 export function usePendingApprovals(enabled: boolean) {
   return useQuery({
-    queryKey: ['pendingSpinRequests'],
+    queryKey: ["pendingSpinRequests"],
     queryFn: () => spinRequestService.getPendingRequests(),
     enabled,
     refetchInterval: 15000,
   });
 }
 
-/** Parent's inbox of spin results their kids asked to keep. */
+/** Parent's inbox of prizes their kids asked to keep. Hidden when there's nothing to do. */
 export default function ApprovalsInbox() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { data: requests = [], isLoading } = usePendingApprovals(true);
+  const { data: requests = [] } = usePendingApprovals(true);
 
   const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['pendingSpinRequests'] });
-    queryClient.invalidateQueries({ queryKey: ['/api/pending'] });
-    queryClient.invalidateQueries({ queryKey: ['/api/children'] });
+    queryClient.invalidateQueries({ queryKey: ["pendingSpinRequests"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/children"] });
   };
 
   const approve = useMutation({
     mutationFn: (id: number) => spinRequestService.approveRequest(id),
     onSuccess: () => {
       refresh();
-      toast({ title: 'Approved', description: "Added to your child's list." });
+      toast({ title: "Approved", description: "It's on their list now." });
     },
     onError: (error) => {
       refresh();
-      toast({ title: "Couldn't approve", description: errorMessage(error, 'Please try again.'), variant: 'destructive' });
+      toast({ title: "Couldn't approve", description: errorMessage(error), variant: "destructive" });
     },
   });
 
@@ -55,67 +43,57 @@ export default function ApprovalsInbox() {
     mutationFn: (id: number) => spinRequestService.rejectRequest(id),
     onSuccess: () => {
       refresh();
-      toast({ title: 'Not approved', description: 'Your child keeps the spin and can try again.' });
+      toast({ title: "Not approved", description: "They keep the spin and can try again." });
     },
     onError: (error) => {
       refresh();
-      toast({ title: "Couldn't update", description: errorMessage(error, 'Please try again.'), variant: 'destructive' });
+      toast({ title: "Couldn't update", description: errorMessage(error), variant: "destructive" });
     },
   });
 
-  if (isLoading) return null;
+  if (requests.length === 0) return null;
+  const busy = approve.isPending || reject.isPending;
 
   return (
-    <section aria-labelledby="approvals-heading" className="mb-6">
-      <h2 id="approvals-heading" className="text-lg font-bold mb-2 flex items-center gap-2">
-        <Inbox className="h-5 w-5 text-indigo-600" aria-hidden="true" />
-        Waiting for you
-        {requests.length > 0 && (
-          <span className="bg-indigo-600 text-white text-xs rounded-full px-2 py-0.5" data-testid="badge-approvals-inline">{requests.length}</span>
-        )}
-      </h2>
-      {requests.length === 0 ? (
-        <p className="text-sm text-gray-500">No spin requests right now.</p>
-      ) : (
-        <div className="space-y-3">
-          {requests.map((r) => (
-            <Card key={r.id} className="p-4 border-indigo-100" data-testid={`card-request-${r.id}`}>
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="min-w-0">
-                  <p className="text-sm text-gray-500">
-                    <span className="font-semibold text-gray-800">{r.childName || 'Your child'}</span> landed on
-                  </p>
-                  <p className="text-lg font-bold">{r.consequenceText || 'Unknown'}</p>
-                  {r.description && (
-                    <p className="mt-1 text-sm text-gray-700 italic">"{r.description}"</p>
-                  )}
-                  <p className="mt-1 text-xs text-gray-400">{new Date(r.requestedAt).toLocaleString()}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => reject.mutate(r.id)}
-                    disabled={approve.isPending || reject.isPending}
-                    data-testid={`button-reject-${r.id}`}
-                  >
-                    <XCircle className="h-4 w-4 mr-1" aria-hidden="true" /> Not now
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="bg-green-600 hover:bg-green-700"
-                    onClick={() => approve.mutate(r.id)}
-                    disabled={approve.isPending || reject.isPending}
-                    data-testid={`button-approve-${r.id}`}
-                  >
-                    <CheckCircle className="h-4 w-4 mr-1" aria-hidden="true" /> Approve
-                  </Button>
-                </div>
+    <section aria-labelledby="approvals-heading" className="mb-8 animate-rise">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-60 motion-reduce:hidden" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+        </span>
+        <h2 id="approvals-heading" className="text-lg font-bold">
+          Needs your OK <span className="text-muted-foreground font-semibold" data-testid="badge-approvals-inline">({requests.length})</span>
+        </h2>
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {requests.map((r: any) => (
+          <article key={r.id} className="surface p-5" data-testid={`card-request-${r.id}`}>
+            <div className="flex items-start gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-reward-soft text-amber-600">
+                <Gift className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold text-foreground">{r.childName || "Your child"}</span> won
+                  <span className="ml-1">· {formatDistanceToNow(new Date(r.requestedAt), { addSuffix: true })}</span>
+                </p>
+                <p className="mt-0.5 text-lg font-bold leading-snug">{r.consequenceText || "A prize"}</p>
+                {r.description && (
+                  <p className="mt-2 rounded-xl bg-muted px-3 py-2 text-sm">"{r.description}"</p>
+                )}
               </div>
-            </Card>
-          ))}
-        </div>
-      )}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <Button variant="outline" onClick={() => reject.mutate(r.id)} disabled={busy} data-testid={`button-reject-${r.id}`}>
+                Not now
+              </Button>
+              <Button className="bg-success hover:bg-success/90 shadow-success/30" onClick={() => approve.mutate(r.id)} disabled={busy} data-testid={`button-approve-${r.id}`}>
+                <Check aria-hidden="true" /> Approve
+              </Button>
+            </div>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
