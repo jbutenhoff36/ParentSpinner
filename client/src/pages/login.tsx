@@ -80,7 +80,8 @@ export default function LoginPage() {
     const parentCode = e.target.value;
     registerForm.setValue('parentCode', parentCode);
 
-    if (!parentCode.trim()) {
+    const cleanCode = parentCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (cleanCode.length < 6) {
       setUnlinkedChildProfiles([]);
       setSelectedChildProfileId('');
       setParentCodeMessage('');
@@ -90,7 +91,7 @@ export default function LoginPage() {
     try {
       setIsLoadingProfiles(true);
       setParentCodeMessage('');
-      const parentResponse = await fetch(`/api/auth/verify-parent-code?code=${encodeURIComponent(parentCode)}`);
+      const parentResponse = await fetch(`/api/auth/verify-parent-code?code=${encodeURIComponent(cleanCode)}`);
       if (!parentResponse.ok) {
         setParentCodeMessage('✗ Invalid parent code');
         setUnlinkedChildProfiles([]);
@@ -286,7 +287,10 @@ export default function LoginPage() {
                           <Input
                             id="parent-code"
                             type="text"
-                            placeholder="Enter your parent's code"
+                            placeholder="6-letter code from your parent"
+                            maxLength={8}
+                            autoCapitalize="characters"
+                            data-testid="input-parent-code"
                             onChange={handleParentCodeChange}
                           />
                           {isLoadingProfiles && (

@@ -49,6 +49,58 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   return timingSafeEqual(actual, expected);
 }
 
+// ---- join codes & rate limits ----
+
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I/L
+
+function newJoinCode(): string {
+  let code = "";
+  for (let i = 0; i < 6; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  return code;
+}
+
+function normalizeCode(value: unknown): string {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** Gives a parent a join code if they don't have one yet (retries on the rare clash). */
+async function ensureJoinCode(user: User): Promise<User> {
+  if (user.role !== "parent" || user.joinCode) return user;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return (await storage.updateUser(user.id, { joinCode: newJoinCode() })) || user;
+    } catch (err: any) {
+      if (err?.code !== "23505") throw err;
+    }
+  }
+  throw new Error("Could not create a join code");
+}
+
+/** Simple in-memory fixed-window limiter (fine for one server instance). */
+function rateLimiter(limit: number, windowMs: number, message: string) {
+  const hits = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    hits.forEach((v, k) => {
+      if (v.resetAt <= now) hits.delete(k);
+    });
+  }, windowMs).unref();
+  return (key: string) => {
+    const now = Date.now();
+    const entry = hits.get(key);
+    if (!entry || entry.resetAt <= now) {
+      hits.set(key, { count: 1, resetAt: now + windowMs });
+      return;
+    }
+    entry.count++;
+    if (entry.count > limit) throw new HttpError(429, message);
+  };
+}
+
+const loginLimit = rateLimiter(10, 15 * 60 * 1000, "Too many login attempts. Please wait 15 minutes and try again.");
+const registerLimit = rateLimiter(20, 60 * 60 * 1000, "Too many sign-ups from this device. Please try again later.");
+const codeLimit = rateLimiter(30, 15 * 60 * 1000, "Too many code checks. Please wait a few minutes and try again.");
+
 function publicUser(user: User) {
   const { password: _pw, ...rest } = user;
   return rest;
@@ -218,6 +270,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   // ----- auth (public) -----
 
   app.post("/api/auth/register", wrap(async (req, res) => {
+    registerLimit(req.ip || "unknown");
     const data = body(registerSchema, req.body);
     if (await storage.getUserByUsername(data.username)) {
       throw new HttpError(409, "That username is already taken");
@@ -226,8 +279,9 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     let parentId: number | null = null;
     let profile: ChildProfile | undefined;
     if (data.role === "child") {
-      const parent = data.parentCode ? await storage.getUser(Number(data.parentCode)) : undefined;
-      if (!parent || parent.role !== "parent") throw new HttpError(400, "Invalid parent code");
+      const code = normalizeCode(data.parentCode);
+      const parent = code ? await storage.getParentByJoinCode(code) : undefined;
+      if (!parent) throw new HttpError(400, "Invalid parent code");
       profile = data.childProfileId ? await storage.getChildProfile(Number(data.childProfileId)) : undefined;
       if (!profile || profile.userId !== parent.id || profile.childUserId) {
         throw new HttpError(400, "Please pick one of your parent's unclaimed child profiles");
@@ -235,7 +289,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       parentId = parent.id;
     }
 
-    const user = await storage.createUser({
+    let user = await storage.createUser({
       username: data.username,
       password: await hashPassword(data.password),
       role: data.role,
@@ -248,6 +302,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
     if (profile) {
       await storage.updateChildProfile(profile.id, { childUserId: user.id });
     } else {
+      user = await ensureJoinCode(user);
       await storage.ensureFamilyDefaults(user.id);
       await storage.getConfiguration(user.id);
     }
@@ -261,6 +316,7 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       z.object({ username: z.string().trim().min(1), password: z.string().min(1) }),
       req.body,
     );
+    loginLimit(`${req.ip}|${username.toLowerCase()}`);
     const user = await storage.getUserByUsername(username);
     if (!user || !(await verifyPassword(password, user.password))) {
       throw new HttpError(401, "Wrong username or password");
@@ -282,9 +338,10 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   });
 
   app.get("/api/auth/verify-parent-code", wrap(async (req, res) => {
-    const code = Number(req.query.code);
-    const parent = Number.isInteger(code) && code > 0 ? await storage.getUser(code) : undefined;
-    if (!parent || parent.role !== "parent") throw new HttpError(404, "Invalid parent code");
+    codeLimit(req.ip || "unknown");
+    const code = normalizeCode(req.query.code);
+    const parent = code.length === 6 ? await storage.getParentByJoinCode(code) : undefined;
+    if (!parent) throw new HttpError(404, "Invalid parent code");
     const unlinked = await storage.getUnlinkedChildProfiles(parent.id);
     res.json({
       valid: true,
@@ -296,9 +353,31 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   // Everything below needs a logged-in user.
   app.use("/api", requireAuth);
 
-  app.get("/api/auth/me", (req, res) => {
-    res.json(publicUser(req.user!));
-  });
+  app.get("/api/auth/me", wrap(async (req, res) => {
+    res.json(publicUser(await ensureJoinCode(req.user!)));
+  }));
+
+  // Parent: get a fresh join code (the old one stops working)
+  app.post("/api/auth/join-code", requireParent, wrap(async (req, res) => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const updated = await storage.updateUser(req.user!.id, { joinCode: newJoinCode() });
+        return res.json({ joinCode: updated!.joinCode });
+      } catch (err: any) {
+        if (err?.code !== "23505") throw err;
+      }
+    }
+    throw new Error("Could not create a join code");
+  }));
+
+  // Parent: set a new password for one of their child accounts
+  app.post("/api/children/:id/password", requireParent, wrap(async (req, res) => {
+    const child = await loadChild(req.user!, parseId(req.params.id));
+    if (!child.childUserId) throw new HttpError(400, "This child hasn't made an account yet");
+    const { password } = body(z.object({ password: z.string().min(4, "Password must be at least 4 characters").max(200) }), req.body);
+    await storage.updateUser(child.childUserId, { password: await hashPassword(password) });
+    res.json({ message: "Password updated" });
+  }));
 
   app.get("/api/auth/me/profile", wrap(async (req, res) => {
     if (req.user!.role !== "child") throw new HttpError(404, "No child profile for this account");

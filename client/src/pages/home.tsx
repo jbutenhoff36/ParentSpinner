@@ -115,12 +115,12 @@ export default function Home() {
                   {currentUser?.role === 'parent' && (
                     <DropdownMenuItem
                       onClick={() => {
-                        navigator.clipboard?.writeText(currentUser.id.toString());
-                        toast({ title: "Parent Code Copied!", description: `Code ${currentUser.id} copied to clipboard` });
+                        navigator.clipboard?.writeText(currentUser.joinCode || "");
+                        toast({ title: "Parent Code Copied!", description: `Code ${currentUser.joinCode} copied to clipboard` });
                       }}
                     >
                       <User className="h-4 w-4 mr-2" />
-                      Parent Code: {currentUser.id}
+                      Parent Code: {currentUser.joinCode}
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem onClick={goToDashboard}>Dashboard</DropdownMenuItem>
