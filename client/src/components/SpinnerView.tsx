@@ -1,12 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { SpinningWheel } from "./ui/new-spinner";
+import { PrizeWheel, PrizeWheelHandle, WheelSlice } from "./ui/prize-wheel";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { ConfettiCelebration } from "@/components/ui/confetti-celebration";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, CheckIcon, Sparkles, AlertTriangle, Sword, User, Clock, Lock } from "lucide-react";
-import { Consequence, PendingConsequence, ChildProfile, SpinRequest } from "@shared/schema";
+import { Sparkles, AlertTriangle, Sword, User, Lock, Hourglass } from "lucide-react";
+import { Consequence, ChildProfile, SpinRequest } from "@shared/schema";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { playSuccessSound, initAudioSystem, playSpinnerStartSound } from "@/lib/sound-utils";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +16,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
 type ConsequenceType = "good" | "bad" | "fighting";
-
 type SpinResult = { id: number | null; text: string; type: string; section: number };
 type ServerSpin = { spinId: string; type: string; section: number; consequence: SpinResult };
 
@@ -23,6 +24,19 @@ interface SpinnerViewProps {
   initialType?: ConsequenceType;
   onChildIdChange?: (childId: string) => void;
 }
+
+// Calm palettes: warm for rewards, cool for chores, soft rose/violet for fighting.
+const PALETTES: Record<ConsequenceType, { colors: string[]; text: string }> = {
+  good: { colors: ["#FCD581", "#F9B27C", "#F6A6A6", "#FFE3A3", "#F7C59F", "#F4B6C2", "#FBD38D", "#F9C784"], text: "#3F2A1D" },
+  bad: { colors: ["#BFD7EA", "#A7C4D9", "#CFE3D4", "#B3CDE0", "#C9D6DF", "#A9CBB7"], text: "#1E2F3D" },
+  fighting: { colors: ["#E9B8C3", "#D7B4DC", "#F0C5BC", "#CDB4DB", "#E7BFD0", "#D9B8C4"], text: "#3A1F2B" },
+};
+
+const TYPE_INFO: Record<ConsequenceType, { label: string; icon: typeof Sparkles; active: string; idle: string }> = {
+  good: { label: "Good", icon: Sparkles, active: "bg-amber-500 text-white ring-2 ring-amber-300", idle: "bg-amber-50 text-amber-800 hover:bg-amber-100" },
+  bad: { label: "Chores", icon: AlertTriangle, active: "bg-slate-600 text-white ring-2 ring-slate-300", idle: "bg-slate-100 text-slate-700 hover:bg-slate-200" },
+  fighting: { label: "Fighting", icon: Sword, active: "bg-rose-500 text-white ring-2 ring-rose-300", idle: "bg-rose-50 text-rose-700 hover:bg-rose-100" },
+};
 
 // apiRequest errors look like `403: {"message":"..."}`; pull out the message.
 function errorMessage(error: unknown, fallback: string): string {
@@ -38,33 +52,35 @@ function errorMessage(error: unknown, fallback: string): string {
   return error.message || fallback;
 }
 
-const defaultWheelColors = [
-  "#FF0080", "#00FFFF", "#FFD700", "#FF00FF", "#00FF00", "#FF4500", "#9400D3", "#FFFF00", "#FF1493",
-  "#00CED1", "#FF6347", "#7FFF00", "#FF69B4", "#00BFFF", "#FFA500", "#FF00FF", "#32CD32", "#FFB6C1",
-];
-
 export default function SpinnerView({ initialChildId, initialType, onChildIdChange }: SpinnerViewProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const wheelRef = useRef<PrizeWheelHandle>(null);
   const [isSpinning, setIsSpinning] = useState(false);
-  const [currentResult, setCurrentResult] = useState<SpinResult | null>(null);
+  const [result, setResult] = useState<SpinResult | null>(null);
+  const [spinId, setSpinId] = useState<string | null>(null);
+  const [showReveal, setShowReveal] = useState(false);
+  const [celebrate, setCelebrate] = useState(false);
   const [activeType, setActiveType] = useState<ConsequenceType>(initialType || "good");
   const [selectedChildId, setSelectedChildId] = useState<string>(initialChildId?.toString() || "");
-  const [isRequestDialogOpen, setIsRequestDialogOpen] = useState(false);
-  const [spinRequestDescription, setSpinRequestDescription] = useState("");
-  // The server's answer for the spin in progress / on screen
+  const [askingReason, setAskingReason] = useState(false);
+  const [reason, setReason] = useState("");
+  const [announcement, setAnnouncement] = useState("");
   const spinRef = useRef<ServerSpin | null>(null);
-  const [currentSpinId, setCurrentSpinId] = useState<string | null>(null);
 
   const { data: currentUser } = useQuery<any>({ queryKey: ['/api/auth/me'] });
   const isChild = currentUser?.role === 'child';
 
-  const { data: childProfile } = useQuery<ChildProfile>({
-    queryKey: ['/api/auth/me/profile'],
-    enabled: isChild,
-  });
-
+  const { data: childProfile } = useQuery<ChildProfile>({ queryKey: ['/api/auth/me/profile'], enabled: isChild });
   const { data: children = [] } = useQuery<ChildProfile[]>({ queryKey: ['/api/children'] });
+  const { data: consequences = [] } = useQuery<Consequence[]>({ queryKey: ['/api/consequences'] });
+  const { data: config } = useQuery<any>({ queryKey: ['/api/config'] });
+  const goodDaysRequired: number = config?.goodDaysRequired || 7;
+  const { data: myRequests = [] } = useQuery<SpinRequest[]>({
+    queryKey: ['/api/spinrequests/mine'],
+    enabled: isChild,
+    refetchInterval: 15000,
+  });
 
   useEffect(() => {
     if (childProfile?.id) {
@@ -79,302 +95,200 @@ export default function SpinnerView({ initialChildId, initialType, onChildIdChan
     if (initialType && ["good", "bad", "fighting"].includes(initialType)) setActiveType(initialType);
   }, [initialChildId, initialType]);
 
-  // Children only spin the Good wheel.
+  // With one child, pick them automatically
+  useEffect(() => {
+    if (!isChild && !selectedChildId && children.length === 1) {
+      const idStr = children[0].id.toString();
+      setSelectedChildId(idStr);
+      onChildIdChange?.(idStr);
+    }
+  }, [isChild, selectedChildId, children, onChildIdChange]);
+
+  // Children only spin the Good wheel
   useEffect(() => {
     if (isChild && activeType !== "good") setActiveType("good");
   }, [isChild, activeType]);
 
-  const { data: consequences = [] } = useQuery<Consequence[]>({ queryKey: ['/api/consequences'] });
-  const { data: config = { wheelSettings: {} } } = useQuery<any>({ queryKey: ['/api/config'] });
-  const { data: pendingConsequences = [] } = useQuery<PendingConsequence[]>({ queryKey: ['/api/pending'] });
+  const options = consequences
+    .filter((c) => c.type === activeType)
+    .sort((a, b) => a.section - b.section);
 
-  const { data: myRequests = [] } = useQuery<SpinRequest[]>({
-    queryKey: ['/api/spinrequests/mine'],
-    enabled: isChild,
-    refetchInterval: 10000,
-  });
-
-  const filteredConsequences = consequences.filter((c) => c.type === activeType);
-
-  const getPendingCount = (type: ConsequenceType) => {
-    if (!selectedChildId) return 0;
-    return pendingConsequences.filter(
-      (p) => p.type === type && p.childId === parseInt(selectedChildId) && !p.completed,
-    ).length;
-  };
+  const palette = PALETTES[activeType];
+  const slices: WheelSlice[] = (options.length > 0 ? options.map((c) => c.text) : ["Add items in Setup"]).map((label, i, arr) => ({
+    label,
+    // Avoid two neighbours sharing a colour where the wheel wraps around
+    color: palette.colors[(i === arr.length - 1 && arr.length % palette.colors.length === 1 ? i + 1 : i) % palette.colors.length],
+    textColor: palette.text,
+  }));
 
   const selectedChild: ChildProfile | undefined = isChild
     ? childProfile
     : children.find((c) => c.id === parseInt(selectedChildId || "0"));
 
-  // Earned spins not already waiting on a parent's approval
-  const waitingGoodRequests = isChild
-    ? myRequests.filter((r) => r.status === "pending" && r.type === "good").length
-    : 0;
-  const getEarnedSpinsCount = () => Math.max(0, (selectedChild?.earnedSpins || 0) - waitingGoodRequests);
-  const hasEarnedSpins = () => getEarnedSpinsCount() > 0;
-
+  const waitingGoodRequests = isChild ? myRequests.filter((r) => r.status === "pending" && r.type === "good").length : 0;
+  const spinsLeft = Math.max(0, (selectedChild?.earnedSpins || 0) - waitingGoodRequests);
   const needsEarnedSpin = activeType === "good";
-  const canSpin =
-    !!selectedChild &&
-    filteredConsequences.length > 0 &&
-    !isSpinning &&
-    !currentResult &&
-    (!needsEarnedSpin || hasEarnedSpins());
+  const canSpin = !!selectedChild && options.length > 0 && !isSpinning && !showReveal && (!needsEarnedSpin || spinsLeft > 0);
 
-  // Wheel slices
-  const wheelSections = (() => {
-    const unique = Array.from(new Set(filteredConsequences.map((c) => c.section))).sort((a, b) => a - b);
-    return unique.length > 0 ? unique : Array.from({ length: 8 }, (_, i) => i + 1);
-  })();
-  const colors: string[] = config?.wheelSettings?.wheelColors || defaultWheelColors;
-  const wheelColors = wheelSections.map((_, i) => colors[i % colors.length]);
-
-  const refreshAfterSpin = () => {
+  const refreshAll = () => {
     queryClient.invalidateQueries({ queryKey: ['/api/pending'] });
     queryClient.invalidateQueries({ queryKey: ['/api/children'] });
     queryClient.invalidateQueries({ queryKey: ['/api/auth/me/profile'] });
     queryClient.invalidateQueries({ queryKey: ['/api/spinrequests/mine'] });
+    queryClient.invalidateQueries({ queryKey: ['pendingSpinRequests'] });
   };
 
-  const resetSpinner = () => {
-    setCurrentResult(null);
-    setCurrentSpinId(null);
+  const closeReveal = () => {
+    setShowReveal(false);
+    setAskingReason(false);
+    setReason("");
+    setCelebrate(false);
+    setResult(null);
+    setSpinId(null);
     spinRef.current = null;
   };
 
-  // Child: send the result to a parent for approval
-  const createSpinRequestMutation = useMutation({
-    mutationFn: async ({ spinId, description }: { spinId: string; description: string }) =>
-      apiRequest('POST', '/api/spinrequests', { spinId, description }),
+  const requestMutation = useMutation({
+    mutationFn: async () => apiRequest('POST', '/api/spinrequests', { spinId, description: reason.trim() }),
     onSuccess: () => {
-      refreshAfterSpin();
-      setIsRequestDialogOpen(false);
-      setSpinRequestDescription("");
-      toast({
-        title: "Spin request sent!",
-        description: "Your parent will review and approve the spin result.",
-        duration: 5000,
-      });
-      resetSpinner();
+      refreshAll();
+      toast({ title: "Sent to your parent!", description: "They'll approve it soon." });
+      closeReveal();
     },
-    onError: (error) => {
-      toast({ title: "Error", description: errorMessage(error, "Failed to send the spin request."), variant: "destructive" });
-    },
+    onError: (error) => toast({ title: "Couldn't send it", description: errorMessage(error, "Please try again."), variant: "destructive" }),
   });
 
-  // Parent: keep the result; it goes straight onto the child's earned list
-  const acceptSpinMutation = useMutation({
-    mutationFn: async (spinId: string) => apiRequest<PendingConsequence>('POST', `/api/spins/${spinId}/accept`),
+  const acceptMutation = useMutation({
+    mutationFn: async () => apiRequest('POST', `/api/spins/${spinId}/accept`),
     onSuccess: () => {
-      refreshAfterSpin();
-      toast({
-        title: "Consequence accepted!",
-        description: "The consequence has been added to the earned consequences.",
-      });
-      resetSpinner();
+      refreshAll();
+      toast({ title: "Added", description: `Added to ${selectedChild?.name}'s list.` });
+      closeReveal();
     },
-    onError: (error) => {
-      toast({ title: "Error", description: errorMessage(error, "Failed to add the consequence."), variant: "destructive" });
-    },
+    onError: (error) => toast({ title: "Couldn't add it", description: errorMessage(error, "Please try again."), variant: "destructive" }),
   });
 
   const explainBlocked = useCallback(() => {
-    if (isSpinning) return;
-    if (currentResult) {
+    if (isSpinning || showReveal) return;
+    if (!selectedChild) {
+      toast({ title: "Pick a child first", description: "Choose who this spin is for." });
+    } else if (options.length === 0) {
+      toast({ title: "This wheel is empty", description: "Add items to it in Setup." });
+    } else if (needsEarnedSpin && spinsLeft <= 0) {
       toast({
-        title: isChild ? "Send or reset first" : "Accept or reset first",
-        description: isChild ? "Send this result to your parent, or tap Reset." : "Accept this result, or tap Reset to spin again.",
-      });
-    } else if (!selectedChild) {
-      toast({ title: "Select a child first", description: "Choose a child above before spinning.", variant: "destructive" });
-    } else if (filteredConsequences.length === 0) {
-      toast({
-        title: "No consequences available",
-        description: `There are no "${activeType}" consequences defined yet.`,
-        variant: "destructive",
-      });
-    } else if (needsEarnedSpin && !hasEarnedSpins()) {
-      toast({
-        title: "No spins available",
+        title: "No spins yet",
         description: isChild
-          ? "You don't have any earned spins. Good days will earn you spin opportunities!"
-          : "This child doesn't have any earned spins yet.",
-        variant: "destructive",
+          ? waitingGoodRequests > 0 ? "Your last spin is waiting for your parent." : "Good days earn you spins. Keep going!"
+          : `${selectedChild.name} hasn't earned a spin yet.`,
       });
     }
-  }, [isSpinning, currentResult, isChild, selectedChild, filteredConsequences.length, activeType, needsEarnedSpin, toast, getEarnedSpinsCount()]);
+  }, [isSpinning, showReveal, selectedChild, options.length, needsEarnedSpin, spinsLeft, isChild, waitingGoodRequests, toast]);
 
-  // Wheel was flicked: ask the server for the result, then let the wheel land on it.
   const handleSpinStart = useCallback(async (): Promise<number | null> => {
     initAudioSystem();
-    setCurrentResult(null);
     setIsSpinning(true);
-    playSpinnerStartSound(0.4);
+    setAnnouncement("Spinning…");
+    playSpinnerStartSound(0.3);
     try {
       const spin = await apiRequest<ServerSpin>('POST', '/api/spins', {
         type: activeType,
         childId: isChild ? undefined : parseInt(selectedChildId),
       });
       spinRef.current = spin;
-      const index = wheelSections.indexOf(spin.section);
+      let index = options.findIndex((c) => c.id === spin.consequence.id);
+      if (index === -1) index = options.findIndex((c) => c.section === spin.section);
       if (index === -1) {
-        // The wheel changed under us; refresh it and show the result anyway.
+        // The wheel changed under us: show the result without the animation.
         queryClient.invalidateQueries({ queryKey: ['/api/consequences'] });
-        setTimeout(() => handleSpinEnd(-1), 0);
+        setTimeout(() => handleSpinEnd(), 0);
         return null;
       }
       return index;
     } catch (error) {
       setIsSpinning(false);
+      setAnnouncement("");
       toast({ title: "Can't spin right now", description: errorMessage(error, "Please try again."), variant: "destructive" });
-      refreshAfterSpin();
+      refreshAll();
       return null;
     }
-  }, [activeType, isChild, selectedChildId, wheelSections.join(","), toast]);
+  }, [activeType, isChild, selectedChildId, options.map((o) => o.id).join(","), toast]);
 
-  const handleSpinEnd = useCallback((_sectionIndex: number) => {
+  const handleSpinEnd = useCallback(() => {
     const spin = spinRef.current;
     setIsSpinning(false);
     if (!spin) return;
-    const result = spin.consequence;
-    setCurrentResult(result);
-    setCurrentSpinId(spin.spinId);
-    playSuccessSound(result.type === 'good' ? 0.7 : result.type === 'bad' ? 0.5 : 0.6);
-    if (navigator.vibrate) {
-      navigator.vibrate(result.type === 'good' ? [30, 20, 40] : 30);
+    setResult(spin.consequence);
+    setSpinId(spin.spinId);
+    setShowReveal(true);
+    setAnnouncement(`The wheel landed on ${spin.consequence.text}`);
+    if (spin.type === "good") {
+      setCelebrate(true);
+    } else {
+      playSuccessSound(0.4);
     }
   }, []);
 
   useEffect(() => {
-    resetSpinner();
+    closeReveal();
   }, [activeType, selectedChildId]);
 
-  const acceptResult = () => {
-    if (!currentResult || !currentSpinId) return;
-    if (isChild) {
-      setSpinRequestDescription("");
-      setIsRequestDialogOpen(true);
-      return;
-    }
-    acceptSpinMutation.mutate(currentSpinId);
-  };
-
-  const submitSpinRequest = () => {
-    if (!currentSpinId || !spinRequestDescription.trim()) {
-      toast({
-        title: "Description required",
-        description: "Please tell your parent why you deserve this spin!",
-        variant: "destructive",
-      });
-      return;
-    }
-    createSpinRequestMutation.mutate({ spinId: currentSpinId, description: spinRequestDescription.trim() });
-  };
-
-  const getBackgroundColorClass = (type: string | undefined) => {
-    switch (type) {
-      case 'good': return 'bg-blue-600 text-white';
-      case 'bad': return 'bg-gray-700 text-white';
-      case 'fighting': return 'bg-red-600 text-white';
-      default: return 'bg-purple-600 text-white';
-    }
-  };
-
-  const getTextColorClass = (type: string | undefined) => {
-    switch (type) {
-      case 'good': return 'text-blue-600 font-bold';
-      case 'bad': return 'text-gray-700 font-bold';
-      case 'fighting': return 'text-red-600 font-bold';
-      default: return 'text-gray-700 font-bold';
-    }
-  };
-
-  const showLock = needsEarnedSpin && !!selectedChild && !hasEarnedSpins() && !currentResult && !isSpinning;
-  const busy = acceptSpinMutation.isPending || createSpinRequestMutation.isPending;
+  const progress = selectedChild ? Math.min(100, (selectedChild.goodDayCount / goodDaysRequired) * 100) : 0;
+  const isGood = result?.type === "good";
+  const busy = acceptMutation.isPending || requestMutation.isPending;
 
   return (
-    <div className="p-4 flex flex-col items-center max-w-md mx-auto">
-      {/* Type selector tabs */}
-      <div className="w-full mb-6">
-        <h3 className="text-center text-xs sm:text-sm font-medium mb-2 text-gray-600">Select Consequence Type:</h3>
-        <div className="flex space-x-1 sm:space-x-2 w-full">
-          <button
-            onClick={() => setActiveType("good")}
-            disabled={isSpinning}
-            data-testid="button-type-good"
-            className={`flex-1 py-2 px-1 sm:px-2 font-bold rounded-md shadow-md transition-all text-xs sm:text-sm ${
-              activeType === 'good'
-                ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white ring-2 ring-blue-300 ring-offset-1'
-                : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-            }`}
-          >
-            <div className="flex flex-col items-center justify-center space-y-1">
-              <div className="relative">
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <span>Good</span>
-            </div>
-          </button>
-          {!isChild && (
-            <>
-              <button
-                onClick={() => setActiveType("bad")}
-                disabled={isSpinning}
-                data-testid="button-type-bad"
-                className={`flex-1 py-2 px-1 sm:px-2 font-bold rounded-md shadow-md transition-all text-xs sm:text-sm ${
-                  activeType === 'bad'
-                    ? 'bg-gradient-to-br from-gray-600 to-gray-700 text-white ring-2 ring-gray-300 ring-offset-1'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                <div className="flex flex-col items-center justify-center space-y-1">
-                  <div className="relative">
-                    <AlertTriangle className="w-5 h-5" />
-                    {getPendingCount("bad") > 0 && (
-                      <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                        {getPendingCount("bad")}
-                      </span>
-                    )}
-                  </div>
-                  <span>Bad</span>
-                </div>
-              </button>
-              <button
-                onClick={() => setActiveType("fighting")}
-                disabled={isSpinning}
-                data-testid="button-type-fighting"
-                className={`flex-1 py-2 px-1 sm:px-2 font-bold rounded-md shadow-md transition-all text-xs sm:text-sm ${
-                  activeType === 'fighting'
-                    ? 'bg-gradient-to-br from-red-500 to-red-600 text-white ring-2 ring-red-300 ring-offset-1'
-                    : 'bg-red-100 text-red-700 hover:bg-red-200'
-                }`}
-              >
-                <div className="flex flex-col items-center justify-center space-y-1">
-                  <div className="relative">
-                    <Sword className="w-5 h-5" />
-                    {getPendingCount("fighting") > 0 && (
-                      <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                        {getPendingCount("fighting")}
-                      </span>
-                    )}
-                  </div>
-                  <span>Fighting</span>
-                </div>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
+    <div className="p-4 flex flex-col items-center w-full max-w-md md:max-w-lg mx-auto">
+      <div aria-live="polite" className="sr-only">{announcement}</div>
 
-      {/* Child selector (parents only) */}
+      {/* Kid: my progress */}
+      {isChild && selectedChild && (
+        <Card className="w-full p-4 mb-4 border-amber-200 bg-amber-50" data-testid="card-my-progress">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-bold text-amber-900">Next spin</span>
+            <span className="text-sm text-amber-800" data-testid="text-good-days">
+              {selectedChild.goodDayCount} of {goodDaysRequired} good days
+            </span>
+          </div>
+          <Progress value={progress} className="h-3 bg-amber-100" aria-label={`${selectedChild.goodDayCount} of ${goodDaysRequired} good days`} />
+          <p className="mt-3 text-sm text-amber-900" data-testid={spinsLeft > 0 ? "text-spins-available" : "text-no-spins"}>
+            {spinsLeft > 0
+              ? <><Sparkles className="inline w-4 h-4 mr-1" />You have <strong>{spinsLeft}</strong> spin{spinsLeft > 1 ? "s" : ""} to use!</>
+              : waitingGoodRequests > 0
+                ? <><Hourglass className="inline w-4 h-4 mr-1" />Waiting for your parent to approve your last spin.</>
+                : "No spins right now. Every good day gets you closer."}
+          </p>
+        </Card>
+      )}
+
+      {/* Parent: type + child */}
       {!isChild && (
-        <div className="w-full mb-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center space-x-2">
-              <User className="text-gray-500 h-5 w-5" />
-              <span className="text-sm font-medium text-gray-700">Select Child:</span>
+        <>
+          <div className="w-full mb-4" role="group" aria-label="Which wheel">
+            <div className="grid grid-cols-3 gap-2">
+              {(Object.keys(TYPE_INFO) as ConsequenceType[]).map((type) => {
+                const info = TYPE_INFO[type];
+                const Icon = info.icon;
+                return (
+                  <button
+                    key={type}
+                    onClick={() => setActiveType(type)}
+                    disabled={isSpinning}
+                    aria-pressed={activeType === type}
+                    data-testid={`button-type-${type}`}
+                    className={`py-2 rounded-lg font-bold text-sm transition-colors flex flex-col items-center gap-1 ${activeType === type ? info.active : info.idle}`}
+                  >
+                    <Icon className="w-5 h-5" aria-hidden="true" />
+                    {info.label}
+                  </button>
+                );
+              })}
             </div>
+          </div>
+
+          <div className="w-full mb-4 flex items-center justify-between gap-3">
+            <Label htmlFor="spin-child" className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <User className="h-4 w-4" aria-hidden="true" /> Spin for
+            </Label>
             <Select
               value={selectedChildId}
               onValueChange={(value) => {
@@ -383,182 +297,124 @@ export default function SpinnerView({ initialChildId, initialType, onChildIdChan
               }}
               disabled={isSpinning}
             >
-              <SelectTrigger className="w-[220px]" data-testid="select-child">
+              <SelectTrigger id="spin-child" className="w-[200px]" data-testid="select-child">
                 <SelectValue placeholder="Select a child" />
               </SelectTrigger>
               <SelectContent>
                 {children.length === 0 ? (
-                  <div className="p-2 text-sm text-gray-500">No children added yet. Go to Children tab to add.</div>
+                  <div className="p-2 text-sm text-gray-500">No children yet. Add one in the Family tab.</div>
                 ) : (
                   children.map((child) => (
-                    <SelectItem key={child.id} value={child.id.toString()}>
-                      {child.name}
-                    </SelectItem>
+                    <SelectItem key={child.id} value={child.id.toString()}>{child.name}</SelectItem>
                   ))
                 )}
               </SelectContent>
             </Select>
           </div>
-        </div>
-      )}
 
-      {/* Earned spins (Good wheel only; Bad and Fighting don't need one) */}
-      {needsEarnedSpin && selectedChild && (
-        <div className="w-full mb-4 flex justify-center">
-          {getEarnedSpinsCount() > 0 ? (
-            <div className="bg-gradient-to-r from-green-400 to-blue-500 text-white px-6 py-3 rounded-lg font-bold flex items-center space-x-2 shadow-lg animate-pulse" data-testid="text-spins-available">
-              <Sparkles className="w-6 h-6" />
-              <span className="text-lg">{getEarnedSpinsCount()} Spin{getEarnedSpinsCount() > 1 ? 's' : ''} Available!</span>
-              <Sparkles className="w-6 h-6" />
-            </div>
-          ) : (
-            <div className="bg-gray-200 text-gray-600 px-4 py-2 rounded-lg font-semibold flex items-center space-x-2" data-testid="text-no-spins">
-              <Lock className="w-5 h-5" />
-              <span>
-                {waitingGoodRequests > 0 ? "Waiting for your parent to approve" : "No Spins Available - Keep earning good days!"}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="relative mb-6 w-full flex justify-center">
-        <div className="relative">
-          <SpinningWheel
-            sections={wheelSections.map((section, index) => ({
-              section: section.toString(),
-              color: wheelColors[index] || defaultWheelColors[index % defaultWheelColors.length],
-            }))}
-            canSpin={canSpin}
-            onBlocked={explainBlocked}
-            onSpinStart={handleSpinStart}
-            onSpin={handleSpinEnd}
-            className="w-80 h-80"
-          />
-          {showLock && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-              <div className="bg-black/70 text-white px-4 py-2 rounded-lg flex items-center space-x-2 shadow-lg">
-                <Lock className="w-5 h-5" />
-                <span className="font-semibold">No Spins Available</span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <Card className={`w-full p-4 sm:p-5 rounded-lg mb-6 min-h-[7rem] flex items-center justify-center shadow-lg border-2 ${
-        currentResult
-          ? currentResult.type === 'good' ? 'border-blue-300 bg-blue-50'
-            : currentResult.type === 'bad' ? 'border-gray-300 bg-gray-50'
-            : currentResult.type === 'fighting' ? 'border-red-300 bg-red-50'
-            : 'border-purple-300 bg-purple-50'
-          : 'border-gray-200 bg-gray-50'
-      }`}>
-        {currentResult ? (
-          <div className="text-center" data-testid="spin-result">
-            <div className={`inline-flex items-center px-3 py-1 ${getBackgroundColorClass(currentResult.type)} text-sm font-bold rounded-full mb-3 shadow-sm`}>
-              <span className="mr-1">{currentResult.section}</span>
-              <span className="mx-1">•</span>
-              {currentResult.type === 'good' && <span className="flex items-center"><Sparkles className="w-3 h-3 mr-1" /> Good</span>}
-              {currentResult.type === 'bad' && <span className="flex items-center"><AlertTriangle className="w-3 h-3 mr-1" /> Bad</span>}
-              {currentResult.type === 'fighting' && <span className="flex items-center"><Sword className="w-3 h-3 mr-1" /> Fighting</span>}
-            </div>
-            <p className={`text-xl ${getTextColorClass(currentResult.type)}`} data-testid="text-spin-result">
-              {currentResult.text}
+          {needsEarnedSpin && selectedChild && (
+            <p className="w-full mb-3 text-sm text-center text-gray-600" data-testid={spinsLeft > 0 ? "text-spins-available" : "text-no-spins"}>
+              {spinsLeft > 0
+                ? <>{selectedChild.name} has <strong>{spinsLeft}</strong> spin{spinsLeft > 1 ? "s" : ""} to use</>
+                : <><Lock className="inline w-4 h-4 mr-1" aria-hidden="true" />{selectedChild.name} hasn't earned a spin yet ({selectedChild.goodDayCount} of {goodDaysRequired} good days)</>}
             </p>
-          </div>
-        ) : (
-          <div className="text-center">
-            <div className={`flex items-center justify-center ${isSpinning ? 'animate-pulse' : ''}`}>
-              <p className="text-center text-lg font-bold text-gray-600">
-                {isSpinning ? "Spinning..."
-                  : !selectedChild ? "Select a child first"
-                  : needsEarnedSpin && !hasEarnedSpins() ? "No spins available"
-                  : "Flick the pointer to spin"}
-              </p>
-            </div>
-            {!isSpinning && (
-              <p className="text-sm text-gray-400 mt-2">
-                {!selectedChild ? "Choose a child above"
-                  : needsEarnedSpin && !hasEarnedSpins() ? "Earn spins through good days"
-                  : "Grab the black pointer and flick it"}
-              </p>
-            )}
-          </div>
-        )}
-      </Card>
-
-      <div className="flex space-x-2 sm:space-x-4 w-full justify-center mt-2">
-        <Button
-          variant="outline"
-          onClick={resetSpinner}
-          disabled={isSpinning || busy}
-          data-testid="button-reset"
-          className="px-4 sm:px-6 py-2 sm:py-3 bg-gray-200 rounded-lg font-bold text-gray-700 shadow hover:bg-gray-300 transition-colors flex-1 max-w-[120px] sm:max-w-[140px] text-sm sm:text-base"
-        >
-          <RotateCcw className="mr-1 sm:mr-2 h-3 w-3 sm:h-4 sm:w-4" /> Reset
-        </Button>
-        <Button
-          onClick={acceptResult}
-          disabled={!currentResult || !currentSpinId || isSpinning || busy}
-          data-testid="button-accept-consequence"
-          className={`px-4 sm:px-6 py-2 sm:py-3 ${isChild ? 'bg-blue-500 hover:bg-blue-600' : 'bg-green-500 hover:bg-green-600'} text-white rounded-lg font-bold shadow transition-colors flex-1 max-w-[120px] sm:max-w-[140px] text-sm sm:text-base`}
-        >
-          {busy ? (
-            <span className="flex items-center justify-center">Processing...</span>
-          ) : isChild ? (
-            <><Clock className="mr-2 h-4 w-4" /> Request</>
-          ) : (
-            <><CheckIcon className="mr-2 h-4 w-4" /> Accept</>
           )}
-        </Button>
+          {!needsEarnedSpin && (
+            <p className="w-full mb-3 text-sm text-center text-gray-500">No earned spin needed for this wheel.</p>
+          )}
+        </>
+      )}
+
+      <div className={`relative w-full mb-5 transition-opacity ${canSpin || isSpinning ? "" : "opacity-60"}`}>
+        <PrizeWheel
+          ref={wheelRef}
+          slices={slices}
+          canSpin={canSpin}
+          onBlocked={explainBlocked}
+          onSpinStart={handleSpinStart}
+          onSpinEnd={handleSpinEnd}
+          ariaLabel={`${TYPE_INFO[activeType].label} wheel with ${options.length} choices: ${options.map((o) => o.text).join(", ")}`}
+        />
       </div>
 
-      {/* Spin request description dialog for children */}
-      <Dialog open={isRequestDialogOpen} onOpenChange={setIsRequestDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+      <Button
+        size="lg"
+        onClick={() => wheelRef.current?.spin()}
+        disabled={isSpinning}
+        aria-disabled={!canSpin}
+        data-testid="button-spin"
+        className={`w-full max-w-xs h-14 text-lg font-extrabold rounded-full shadow-md ${
+          canSpin ? "bg-indigo-600 hover:bg-indigo-700 text-white" : "bg-gray-300 text-gray-600 hover:bg-gray-300"
+        }`}
+      >
+        {isSpinning ? "Spinning…" : canSpin ? "SPIN" : !selectedChild ? "Pick a child" : needsEarnedSpin && spinsLeft <= 0 ? "No spins yet" : "SPIN"}
+      </Button>
+      <p className="mt-2 text-xs text-gray-400">or tap / swipe the wheel</p>
+
+      <ConfettiCelebration active={celebrate} duration={4000} onComplete={() => setCelebrate(false)} />
+
+      {/* Reveal */}
+      <Dialog open={showReveal} onOpenChange={(open) => { if (!open && !busy) closeReveal(); }}>
+        <DialogContent
+          className={`sm:max-w-[420px] text-center ${isGood ? "border-amber-300 bg-gradient-to-b from-amber-50 to-white" : "border-slate-200 bg-slate-50"}`}
+          data-testid="spin-result"
+        >
           <DialogHeader>
-            <DialogTitle>Request This Spin</DialogTitle>
-            <DialogDescription>
-              Tell your parent why you want to submit this spin result. They will review and approve it.
-            </DialogDescription>
+            <DialogTitle className="text-center text-base font-semibold text-gray-600">
+              {isGood ? (isChild ? "You won!" : `${selectedChild?.name} won!`) : activeType === "fighting" ? "Fighting consequence" : "Chore"}
+            </DialogTitle>
+            <DialogDescription className="sr-only">The result of this spin</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            {currentResult && (
-              <div className={`p-3 rounded-lg ${
-                currentResult.type === 'good' ? 'bg-blue-50 border-blue-200'
-                  : currentResult.type === 'bad' ? 'bg-gray-50 border-gray-200'
-                  : 'bg-red-50 border-red-200'
-              } border`}>
-                <p className="font-semibold text-center">{currentResult.text}</p>
-                <p className="text-xs text-center text-gray-500 mt-1">
-                  {currentResult.type?.charAt(0).toUpperCase()}{currentResult.type?.slice(1)} - Section {currentResult.section}
-                </p>
-              </div>
-            )}
-            <div className="grid gap-2">
+          <p className={`text-3xl font-extrabold my-2 ${isGood ? "text-amber-700" : "text-slate-800"}`} data-testid="text-spin-result">
+            {result?.text}
+          </p>
+
+          {isChild && askingReason ? (
+            <div className="text-left grid gap-2 mt-2">
               <Label htmlFor="spin-description">Why do you deserve this?</Label>
               <Textarea
                 id="spin-description"
                 placeholder="Tell your parent what you did to earn this spin..."
-                value={spinRequestDescription}
-                onChange={(e) => setSpinRequestDescription(e.target.value)}
-                className="min-h-[100px]"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="min-h-[90px] bg-white"
                 maxLength={500}
                 data-testid="textarea-spin-description"
+                autoFocus
               />
             </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsRequestDialogOpen(false)}>Cancel</Button>
-            <Button
-              onClick={submitSpinRequest}
-              disabled={!spinRequestDescription.trim() || createSpinRequestMutation.isPending}
-              data-testid="button-submit-spin-request"
-            >
-              {createSpinRequestMutation.isPending ? "Sending..." : "Send Request"}
-            </Button>
+          ) : null}
+
+          <DialogFooter className="sm:justify-center gap-2 mt-2">
+            {isChild ? (
+              askingReason ? (
+                <Button
+                  onClick={() => requestMutation.mutate()}
+                  disabled={!reason.trim() || busy}
+                  className="bg-indigo-600 hover:bg-indigo-700"
+                  data-testid="button-submit-spin-request"
+                >
+                  {requestMutation.isPending ? "Sending…" : "Send to my parent"}
+                </Button>
+              ) : (
+                <Button onClick={() => setAskingReason(true)} className="bg-indigo-600 hover:bg-indigo-700" data-testid="button-accept-consequence">
+                  Ask to keep it
+                </Button>
+              )
+            ) : (
+              <>
+                <Button variant="outline" onClick={closeReveal} disabled={busy} data-testid="button-reset">
+                  Don't keep
+                </Button>
+                <Button onClick={() => acceptMutation.mutate()} disabled={busy} className="bg-green-600 hover:bg-green-700" data-testid="button-accept-consequence">
+                  {acceptMutation.isPending ? "Adding…" : `Add to ${selectedChild?.name}'s list`}
+                </Button>
+              </>
+            )}
           </DialogFooter>
+          {isChild && (
+            <p className="text-xs text-gray-500">You can close this and send it later. Spinning again shows the same prize.</p>
+          )}
         </DialogContent>
       </Dialog>
     </div>

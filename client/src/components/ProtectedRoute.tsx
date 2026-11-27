@@ -24,7 +24,7 @@ export const ProtectedRoute = ({ component: Component, path, allowedRoles }: Pro
     if (!user) {
       setLocation('/login');
     } else if (roleNotAllowed) {
-      setLocation(user.role === 'parent' ? '/parent-dashboard' : '/child-dashboard');
+      setLocation('/');
     }
   }, [isLoading, user, roleNotAllowed, setLocation]);
 

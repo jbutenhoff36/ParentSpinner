@@ -82,7 +82,10 @@ app.use((req, res, next) => {
   server.listen({ port, host: "0.0.0.0" }, () => {
     log(`serving on port ${port}`);
   });
-})();
+})().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
+});
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled promise rejection:", reason);

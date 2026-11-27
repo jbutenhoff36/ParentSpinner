@@ -4,7 +4,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import SpinnerView from "@/components/SpinnerView";
 import SetupView from "@/components/SetupView";
 import PendingView from "@/components/PendingView";
-import ChildrenView from "@/components/ChildrenView";
+import FamilyView from "@/components/FamilyView";
+import { usePendingApprovals } from "@/components/ApprovalsInbox";
 import { Settings, User, LogOut, LogIn, ChevronDown } from "lucide-react";
 import { SettingsDialog } from "@/components/ui/settings-dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,7 +25,7 @@ const tabClass =
   "data-[state=active]:bg-white data-[state=active]:text-blue-500 data-[state=inactive]:bg-gray-200/30 data-[state=inactive]:text-white rounded-t-lg font-bold py-2 text-xs sm:text-sm";
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState("spinner");
+  const [activeTab, setActiveTab] = useState<string | null>(null);
   const { toast } = useToast();
   const [_, setLocation] = useLocation();
   const queryClient = useQueryClient();
@@ -41,6 +42,11 @@ export default function Home() {
   });
 
   const [selectedSpinnerChildId, setSelectedSpinnerChildId] = useState<string>("");
+
+  // Parents start on their family (approvals + kids); kids start on the wheel.
+  const isParent = currentUser?.role === 'parent';
+  const tab = activeTab ?? (isParent ? 'children' : 'spinner');
+  const { data: approvals = [] } = usePendingApprovals(isParent);
 
   const getTotalEarnedSpins = () => {
     if (currentUser?.role === 'child') {
@@ -88,13 +94,8 @@ export default function Home() {
     setLocation('/login');
   };
 
-  const goToDashboard = () => {
-    if (currentUser?.role === 'parent') setLocation('/parent-dashboard');
-    else if (currentUser?.role === 'child') setLocation('/child-dashboard');
-  };
-
   return (
-    <div className="min-h-screen max-w-md mx-auto bg-white shadow-lg font-nunito">
+    <div className="min-h-screen max-w-md md:max-w-3xl mx-auto bg-white shadow-lg font-nunito">
       <header className="bg-gradient-to-r from-blue-500 to-gray-800 text-white p-4 relative">
         <div className="flex justify-between items-center">
           <div>
@@ -123,7 +124,6 @@ export default function Home() {
                       Parent Code: {currentUser.joinCode}
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={goToDashboard}>Dashboard</DropdownMenuItem>
                   <DropdownMenuItem onClick={handleLogout} data-testid="button-logout">
                     <LogOut className="h-4 w-4 mr-2" />
                     Logout
@@ -148,40 +148,39 @@ export default function Home() {
           </div>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-4">
+        <Tabs value={tab} onValueChange={setActiveTab} className="mt-4">
           {currentUser?.role === 'child' ? (
             <TabsList className="grid grid-cols-2 gap-1 w-full">
-              <TabsTrigger value="spinner" className={tabClass} data-testid="tab-spinner">Spinner</TabsTrigger>
-              <TabsTrigger value="pending" className={tabClass} data-testid="tab-pending">
-                <div className="flex items-center space-x-1">
-                  <span className="hidden sm:inline">My Consequences Earned</span>
-                  <span className="sm:hidden">My Earned</span>
+              <TabsTrigger value="spinner" className={tabClass} data-testid="tab-spinner">
+                <span className="flex items-center gap-1">
+                  Spin
                   {getTotalEarnedSpins() > 0 && (
-                    <span className="bg-gradient-to-r from-green-400 to-blue-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center ml-1 animate-pulse">
+                    <span className="bg-amber-500 text-white text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center" aria-label={`${getTotalEarnedSpins()} spins to use`}>
                       {getTotalEarnedSpins()}
                     </span>
                   )}
-                </div>
+                </span>
               </TabsTrigger>
+              <TabsTrigger value="pending" className={tabClass} data-testid="tab-pending">My To-Dos</TabsTrigger>
             </TabsList>
           ) : (
             <TabsList className="grid grid-cols-4 gap-1 w-full">
-              <TabsTrigger value="spinner" className={tabClass} data-testid="tab-spinner">Spinner</TabsTrigger>
-              <TabsTrigger value="children" className={tabClass} disabled={currentUser?.role !== 'parent'} data-testid="tab-children">
-                Children
-              </TabsTrigger>
-              <TabsTrigger value="pending" className={tabClass} data-testid="tab-pending">
-                <div className="flex items-center space-x-1">
-                  <span className="hidden sm:inline">Consequences Earned</span>
-                  <span className="sm:hidden">Earned</span>
-                  {getTotalEarnedSpins() > 0 && (
-                    <span className="bg-gradient-to-r from-green-400 to-blue-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center ml-1 animate-pulse">
-                      {getTotalEarnedSpins()}
+              <TabsTrigger value="children" className={tabClass} disabled={!isParent} data-testid="tab-children">
+                <span className="flex items-center gap-1">
+                  Family
+                  {approvals.length > 0 && (
+                    <span className="bg-rose-500 text-white text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center" aria-label={`${approvals.length} waiting for approval`} data-testid="badge-approvals">
+                      {approvals.length}
                     </span>
                   )}
-                </div>
+                </span>
               </TabsTrigger>
-              <TabsTrigger value="setup" className={tabClass} disabled={currentUser?.role !== 'parent'} data-testid="tab-setup">
+              <TabsTrigger value="spinner" className={tabClass} data-testid="tab-spinner">Spin</TabsTrigger>
+              <TabsTrigger value="pending" className={tabClass} data-testid="tab-pending">
+                <span className="hidden sm:inline">Earned</span>
+                <span className="sm:hidden">Earned</span>
+              </TabsTrigger>
+              <TabsTrigger value="setup" className={tabClass} disabled={!isParent} data-testid="tab-setup">
                 Setup
               </TabsTrigger>
             </TabsList>
@@ -190,16 +189,16 @@ export default function Home() {
       </header>
 
       <main>
-        {activeTab === "spinner" && (
+        {tab === "spinner" && (
           <SpinnerView
             initialChildId={spinnerContext.childId}
             initialType={spinnerContext.type}
             onChildIdChange={setSelectedSpinnerChildId}
           />
         )}
-        {activeTab === "children" && currentUser?.role === 'parent' && <ChildrenView />}
-        {activeTab === "setup" && currentUser?.role === 'parent' && <SetupView />}
-        {activeTab === "pending" && <PendingView childView={currentUser?.role === 'child'} />}
+        {tab === "children" && isParent && <FamilyView />}
+        {tab === "setup" && currentUser?.role === 'parent' && <SetupView />}
+        {tab === "pending" && <PendingView childView={currentUser?.role === 'child'} />}
       </main>
     </div>
   );
