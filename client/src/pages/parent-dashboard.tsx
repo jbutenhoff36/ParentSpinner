@@ -5,7 +5,8 @@ import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { authService } from '@/lib/auth-service';
 import { spinRequestService } from '@/lib/spin-request-service';
-import { CheckCircle, XCircle, LogOut, Loader2, User } from 'lucide-react';
+import { CheckCircle, XCircle, LogOut, Loader2, User, Copy, RefreshCw } from 'lucide-react';
+import { apiRequest } from '@/lib/queryClient';
 
 function errorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) return fallback;
@@ -68,6 +69,18 @@ export default function ParentDashboard() {
     },
   });
 
+  const newCodeMutation = useMutation({
+    mutationFn: () => apiRequest<{ joinCode: string }>('POST', '/api/auth/join-code'),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['currentUser'], (old: any) => (old ? { ...old, joinCode: data.joinCode } : old));
+      queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
+      toast({ title: 'New parent code', description: `Your new code is ${data.joinCode}. The old one no longer works.` });
+    },
+    onError: (error) => {
+      toast({ title: 'Error', description: errorMessage(error, 'Could not make a new code'), variant: 'destructive' });
+    },
+  });
+
   const handleLogout = async () => {
     try {
       await authService.logout();
@@ -111,13 +124,34 @@ export default function ParentDashboard() {
           <div className="bg-blue-100 rounded-full p-2">
             <User className="h-5 w-5 text-blue-700" />
           </div>
-          <div>
+          <div className="flex-1">
             <h3 className="font-semibold text-blue-800">
-              Your Parent ID: <span className="text-lg" data-testid="text-parent-code">{currentUser?.id}</span>
+              Your Parent Code: <span className="text-lg tracking-widest" data-testid="text-parent-code">{currentUser?.joinCode}</span>
             </h3>
             <p className="text-sm text-blue-600">
-              Use this ID when registering child accounts. Children will need this number to link their accounts to yours.
+              Your kids enter this code when they make their account, to link it to yours.
             </p>
+            <div className="flex gap-2 mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard?.writeText(currentUser?.joinCode || '');
+                  toast({ title: 'Copied', description: 'Parent code copied to clipboard' });
+                }}
+              >
+                <Copy className="h-4 w-4 mr-1" /> Copy
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => newCodeMutation.mutate()}
+                disabled={newCodeMutation.isPending}
+                data-testid="button-new-code"
+              >
+                <RefreshCw className="h-4 w-4 mr-1" /> New code
+              </Button>
+            </div>
           </div>
         </div>
       </Card>

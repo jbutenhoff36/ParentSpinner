@@ -21,7 +21,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Plus, Edit, Trash, Sparkles, X, CheckCircle, Upload, User, RotateCcw, Settings2 } from "lucide-react";
+import { Plus, Edit, Trash, Sparkles, X, CheckCircle, Upload, User, RotateCcw, Settings2, KeyRound } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
@@ -75,6 +76,8 @@ export default function ChildrenView() {
   const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
   const [isStatsDialogOpen, setIsStatsDialogOpen] = useState(false);
   const [isResetSpinsDialogOpen, setIsResetSpinsDialogOpen] = useState(false);
+  const [passwordChild, setPasswordChild] = useState<ChildProfile | null>(null);
+  const [newPassword, setNewPassword] = useState("");
   const [selectedChildId, setSelectedChildId] = useState<number | null>(null);
   const [newChildName, setNewChildName] = useState("");
   const [newChildAvatar, setNewChildAvatar] = useState("");
@@ -166,6 +169,19 @@ export default function ChildrenView() {
     onError: (error) => {
       toast({ title: "Error deleting profile", description: errorMessage(error, "There was a problem deleting the child profile."), variant: "destructive" });
     }
+  });
+
+  const setPasswordMutation = useMutation({
+    mutationFn: ({ id, password }: { id: number; password: string }) =>
+      apiRequest('POST', `/api/children/${id}/password`, { password }),
+    onSuccess: () => {
+      toast({ title: "Password updated", description: `${passwordChild?.name} can now log in with the new password.` });
+      setPasswordChild(null);
+      setNewPassword("");
+    },
+    onError: (error) => {
+      toast({ title: "Couldn't change password", description: errorMessage(error, "Please try again."), variant: "destructive" });
+    },
   });
 
   const resetSpinsMutation = useMutation({
@@ -650,11 +666,52 @@ export default function ChildrenView() {
                     <RotateCcw className="h-4 w-4 mr-1" /> Reset Spins
                   </Button>
                 </div>
+                {child.childUserId && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full text-gray-600"
+                    onClick={() => { setPasswordChild(child); setNewPassword(""); }}
+                    data-testid={`button-set-password-${child.id}`}
+                  >
+                    <KeyRound className="h-4 w-4 mr-1" /> Set {child.name}'s password
+                  </Button>
+                )}
               </CardFooter>
             </Card>
           ))}
         </div>
       )}
+
+      <Dialog open={!!passwordChild} onOpenChange={(open) => { if (!open) setPasswordChild(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set {passwordChild?.name}'s password</DialogTitle>
+            <DialogDescription>Use this if your child forgot their password.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="child-new-password">New password</Label>
+            <Input
+              id="child-new-password"
+              type="text"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="At least 4 characters"
+              data-testid="input-child-password"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPasswordChild(null)}>Cancel</Button>
+            <Button
+              onClick={() => passwordChild && setPasswordMutation.mutate({ id: passwordChild.id, password: newPassword })}
+              disabled={newPassword.length < 4 || setPasswordMutation.isPending}
+              data-testid="button-save-child-password"
+            >
+              {setPasswordMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent>

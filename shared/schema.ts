@@ -10,11 +10,12 @@ export const users = pgTable("users", {
   role: text("role").notNull().default("parent"), // "parent" or "child"
   parentId: integer("parent_id").references((): any => users.id), // For child accounts, references their parent
   email: text("email"), // For notifications
+  joinCode: text("join_code"), // Parents: code kids use to link their account
   notifyOnSpin: boolean("notify_on_spin").default(true),
   notifyOnPending: boolean("notify_on_pending").default(true),
   lastLogin: timestamp("last_login").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("users_join_code_idx").on(t.joinCode)]);
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

@@ -14,6 +14,15 @@ const isProd = process.env.NODE_ENV === "production";
 
 if (isProd) app.set("trust proxy", 1); // hosts like Render/Railway/Fly sit behind a proxy
 
+// Basic security headers
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin");
+  if (isProd) res.setHeader("Strict-Transport-Security", "max-age=15552000");
+  next();
+});
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 
