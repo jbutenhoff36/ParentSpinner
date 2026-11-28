@@ -27,6 +27,15 @@ interface PrizeWheelProps {
 const TWO_PI = Math.PI * 2;
 /** Near-black indigo used for the rim, dividers, hub and arrow */
 const INK = '#1A1733';
+/** Lighten (amt > 0) or darken (amt < 0) a #rrggbb colour. */
+function shadeHex(hex: string, amt: number) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const ch = (v: number) => Math.round(amt >= 0 ? v + (255 - v) * amt : v * (1 + amt));
+  const r = ch((n >> 16) & 255), g = ch((n >> 8) & 255), b = ch(n & 255);
+  return `rgb(${r},${g},${b})`;
+}
 const norm = (a: number) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -138,8 +147,8 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
 
     // Dark rim with a soft top-to-bottom sheen so it reads as a solid ring
     const rimGrad = ctx.createLinearGradient(0, 0, 0, size);
-    rimGrad.addColorStop(0, '#3A3470');
-    rimGrad.addColorStop(0.5, INK);
+    rimGrad.addColorStop(0, '#4B3F9A');
+    rimGrad.addColorStop(0.45, '#221C4A');
     rimGrad.addColorStop(1, '#0B0918');
     ctx.beginPath();
     ctx.arc(c, c, R, 0, TWO_PI);
@@ -156,15 +165,20 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
       ctx.moveTo(0, 0);
       ctx.arc(0, 0, r, i * arc, (i + 1) * arc);
       ctx.closePath();
-      ctx.fillStyle = s.color;
+      // Each slice glows a little lighter toward the middle, like glossy candy
+      const g = ctx.createRadialGradient(0, 0, r * 0.12, 0, 0, r);
+      g.addColorStop(0, shadeHex(s.color, 0.38));
+      g.addColorStop(0.55, s.color);
+      g.addColorStop(1, shadeHex(s.color, -0.1));
+      ctx.fillStyle = g;
       ctx.fill();
     }
 
     // Depth: slices darken a little toward the rim
     const shade = ctx.createRadialGradient(0, 0, r * 0.25, 0, 0, r);
-    shade.addColorStop(0, 'rgba(255,255,255,0.10)');
-    shade.addColorStop(0.7, 'rgba(0,0,0,0)');
-    shade.addColorStop(1, 'rgba(20,16,50,0.16)');
+    shade.addColorStop(0, 'rgba(255,255,255,0)');
+    shade.addColorStop(0.82, 'rgba(0,0,0,0)');
+    shade.addColorStop(1, 'rgba(20,16,50,0.22)');
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, TWO_PI);
     ctx.fillStyle = shade;
@@ -173,14 +187,17 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     // Bold dark dividers between slices
     if (n > 1) {
       ctx.lineCap = 'round';
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = Math.max(2.5, size * 0.009);
-      for (let i = 0; i < n; i++) {
-        const ang = i * arc;
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
-        ctx.stroke();
+      const lw = Math.max(2, size * 0.0075);
+      for (const [color, width] of [['rgba(26,23,51,0.85)', lw], ['rgba(255,255,255,0.55)', lw * 0.35]] as const) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        for (let i = 0; i < n; i++) {
+          const ang = i * arc;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+          ctx.stroke();
+        }
       }
     }
 
@@ -195,6 +212,8 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
       const mid = i * arc + arc / 2;
       ctx.rotate(mid);
       ctx.fillStyle = s.textColor;
+      ctx.shadowColor = 'rgba(255,255,255,0.55)';
+      ctx.shadowBlur = 3;
       let text = s.label;
       if (ctx.measureText(text).width > maxText) {
         while (text.length > 1 && ctx.measureText(text + '…').width > maxText) text = text.slice(0, -1);
@@ -213,10 +232,20 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     }
 
     // Crisp white line between the slices and the dark rim
+    ctx.shadowColor = 'transparent';
     ctx.beginPath();
-    ctx.arc(0, 0, r + 1, 0, TWO_PI);
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#ffffff';
+    ctx.arc(0, 0, r + 1.5, 0, TWO_PI);
+    ctx.lineWidth = 4;
+    const gold = ctx.createLinearGradient(0, -r, 0, r);
+    gold.addColorStop(0, '#FFE9A8');
+    gold.addColorStop(0.5, '#F5B83D');
+    gold.addColorStop(1, '#C9851A');
+    ctx.strokeStyle = gold;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 1, 0, TWO_PI);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.stroke();
 
     // Rim lights: white at every slice edge, gold between
@@ -225,11 +254,19 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     for (let i = 0; i < lights; i++) {
       const ang = (i * TWO_PI) / lights;
       const peg = lights === n || i % 2 === 0;
+      const bx = Math.cos(ang) * pegR, by = Math.sin(ang) * pegR;
+      const br = peg ? rimW * 0.26 : rimW * 0.17;
+      const bulb = ctx.createRadialGradient(bx - br * 0.3, by - br * 0.3, 0, bx, by, br);
+      bulb.addColorStop(0, '#ffffff');
+      bulb.addColorStop(1, peg ? '#FFF1C9' : '#FFC23D');
+      ctx.shadowColor = peg ? 'rgba(255,240,200,0.9)' : 'rgba(255,190,60,0.9)';
+      ctx.shadowBlur = rimW * 0.5;
       ctx.beginPath();
-      ctx.arc(Math.cos(ang) * pegR, Math.sin(ang) * pegR, peg ? rimW * 0.24 : rimW * 0.15, 0, TWO_PI);
-      ctx.fillStyle = peg ? '#ffffff' : '#FFD166';
+      ctx.arc(bx, by, br, 0, TWO_PI);
+      ctx.fillStyle = bulb;
       ctx.fill();
     }
+    ctx.shadowColor = 'transparent';
     ctx.restore();
   }, [size, geometry]);
 
@@ -273,7 +310,11 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     ctx.lineTo(-shaftW, -L + head * 0.82);
     ctx.lineTo(-headW, -L + head);
     ctx.closePath();
-    ctx.fillStyle = INK;
+    const arrowGrad = ctx.createLinearGradient(-headW, 0, headW, 0);
+    arrowGrad.addColorStop(0, '#3B3380');
+    arrowGrad.addColorStop(0.5, INK);
+    arrowGrad.addColorStop(1, '#0B0918');
+    ctx.fillStyle = arrowGrad;
     ctx.fill();
     ctx.shadowColor = 'transparent';
     ctx.lineJoin = 'round';
@@ -288,8 +329,11 @@ export const PrizeWheel = forwardRef<PrizeWheelHandle, PrizeWheelProps>(function
     ctx.arc(c, c, hubR, 0, TWO_PI);
     ctx.fillStyle = INK;
     ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3.5;
+    const hubRing = ctx.createLinearGradient(c, c - hubR, c, c + hubR);
+    hubRing.addColorStop(0, '#FFE9A8');
+    hubRing.addColorStop(1, '#C9851A');
+    ctx.strokeStyle = hubRing;
     ctx.stroke();
     const core = ctx.createRadialGradient(c - hubR * 0.2, c - hubR * 0.25, 1, c, c, hubR * 0.55);
     core.addColorStop(0, '#A48BFF');
