@@ -3,6 +3,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useNotificationContext } from './notification-context';
 import { useMe } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
+import { playNotificationChime } from '@/lib/sound-utils';
 
 type WebSocketContextType = {
   connected: boolean;
@@ -15,32 +16,6 @@ const WebSocketContext = createContext<WebSocketContextType>({
 });
 
 export const useWebSocket = () => useContext(WebSocketContext);
-
-function playCelebrationChord() {
-  if ((window as any).wsNotificationSoundPlaying) return;
-  (window as any).wsNotificationSoundPlaying = true;
-  try {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    [523, 659, 784, 1047].forEach((freq, index) => {
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-      oscillator.frequency.value = freq;
-      oscillator.type = 'sine';
-      const startTime = audioContext.currentTime + index * 0.1;
-      gainNode.gain.setValueAtTime(0.3, startTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.2);
-      oscillator.start(startTime);
-      oscillator.stop(startTime + 0.2);
-    });
-  } catch {
-    // ignore audio errors
-  }
-  setTimeout(() => {
-    (window as any).wsNotificationSoundPlaying = false;
-  }, 1500);
-}
 
 export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   const socketRef = useRef<WebSocket | null>(null);
@@ -85,7 +60,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
           });
 
           if (data.data.notificationType === 'goodDay') {
-            playCelebrationChord();
+            playNotificationChime(0.45);
             toast({ title: data.data.title || 'Celebration!', description: data.data.message, duration: 8000 });
           } else {
             toast({
