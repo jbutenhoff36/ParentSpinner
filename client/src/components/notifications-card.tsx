@@ -1,3 +1,4 @@
+import { installDismissed } from "@/lib/install";
 import { useEffect, useState } from "react";
 import { Bell, BellOff, Share, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,8 @@ export function NotificationsPrompt({ role }: { role: "parent" | "child" }) {
   });
   const { toast } = useToast();
   if (dismissed || !state || state === "on" || state === "unsupported" || state === "blocked") return null;
+  // On iPhone the install banner already covers this step (notifications need the Home Screen app).
+  if (state === "needs-install" && !installDismissed()) return null;
   const dismiss = () => {
     setDismissed(true);
     try {
