@@ -22,9 +22,9 @@ type SpinResult = { id: number | null; text: string; type: string; section: numb
 type ServerSpin = { spinId: string; type: string; section: number; consequence: SpinResult };
 
 const PALETTES: Record<ConsequenceType, { colors: string[]; text: string }> = {
-  good: { colors: ["#FFD166", "#FF9F80", "#FF8FB1", "#C3A6FF", "#8FD3FF", "#7FE0B0"], text: "#1F1A3D" },
-  bad: { colors: ["#A9D6F5", "#BFE6DA", "#C9D3F5", "#A8E3EA", "#D5DEEA", "#B9CCF2"], text: "#14233A" },
-  fighting: { colors: ["#F7B0C0", "#E4BDF5", "#FFC8B0", "#D2BDF7", "#F7BED6", "#FFC0C0"], text: "#3A1F2B" },
+  good: { colors: ["#FFC93C", "#FF8F5E", "#FF7AA8", "#B794FF", "#5EC8FF", "#4FDC9A"], text: "#1A1436" },
+  bad: { colors: ["#7FC6F5", "#7EDCC6", "#A4B5F8", "#68D2E3", "#B3C4E6", "#8FB2F7"], text: "#0F2238" },
+  fighting: { colors: ["#FF8FA9", "#D99CF7", "#FFAA85", "#BFA0FA", "#FF9DC8", "#FF9B9B"], text: "#35121F" },
 };
 const ICONS: Record<ConsequenceType, typeof Gift> = { good: Gift, bad: Brush, fighting: Swords };
 
@@ -259,7 +259,7 @@ export default function SpinPage({ me }: { me: Me }) {
 
         {/* Wheel */}
         <div className="order-2 flex flex-col items-center md:order-1">
-          <div className={cn("w-full transition-opacity", canSpin || spinning ? "" : "opacity-70")}>
+          <div className={cn("w-full transition-opacity", canSpin || spinning ? "" : "opacity-80 saturate-[.75]")}>
             <PrizeWheel
               ref={wheelRef}
               slices={slices}
