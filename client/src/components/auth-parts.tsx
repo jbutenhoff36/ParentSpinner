@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { apiRequest } from "@/lib/queryClient";
+import { errorMessage, type Me } from "@/lib/api";
 import { Loader2, Users, Smile, Check } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -118,6 +121,131 @@ export function KidJoinFields({ onChange }: { onChange: (v: { code: string; prof
         </div>
       )}
     </div>
+  );
+}
+
+const FAMILY_CODE_KEY = "kidspin-family-code";
+/** Remember the family code on this device so a kid only needs their PIN next time. */
+export function rememberFamilyCode(code: string) {
+  try {
+    localStorage.setItem(FAMILY_CODE_KEY, code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+  } catch {
+    /* storage blocked */
+  }
+}
+function savedFamilyCode() {
+  try {
+    return localStorage.getItem(FAMILY_CODE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Kid sign-in: family code, tap your name, type your PIN. No username or email. */
+export function KidSignIn({ onSignedIn, onError }: { onSignedIn: (u: Me) => void; onError: (msg: string) => void }) {
+  const [code, setCode] = useState(savedFamilyCode);
+  const [kids, setKids] = useState<Profile[] | null>(null);
+  const [familyOf, setFamilyOf] = useState("");
+  const [status, setStatus] = useState<"idle" | "checking" | "bad">("idle");
+  const [picked, setPicked] = useState<number | null>(null);
+  const [pin, setPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  useEffect(() => {
+    setPicked(null);
+    if (clean.length < 6) {
+      setKids(null);
+      setStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setStatus("checking");
+    fetch(`/api/auth/family-kids?code=${encodeURIComponent(clean)}`)
+      .then(async (r) => {
+        if (cancelled) return;
+        if (!r.ok) {
+          setStatus("bad");
+          setKids(null);
+          return;
+        }
+        const d = await r.json();
+        setStatus("idle");
+        setFamilyOf(d.familyOf);
+        setKids(d.kids || []);
+        if (d.kids?.length === 1) setPicked(d.kids[0].id);
+      })
+      .catch(() => !cancelled && setStatus("bad"));
+    return () => {
+      cancelled = true;
+    };
+  }, [clean]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!picked || !pin) return;
+    setBusy(true);
+    onError("");
+    try {
+      const user = await apiRequest<Me>("POST", "/api/auth/kid-login", { code: clean, childProfileId: picked, pin });
+      rememberFamilyCode(clean);
+      onSignedIn(user);
+    } catch (err) {
+      onError(errorMessage(err));
+      setPin("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="grid gap-4" onSubmit={submit}>
+      <div className="grid gap-1.5">
+        <Label htmlFor="kid-family-code">Parent code</Label>
+        <Input
+          id="kid-family-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={8}
+          placeholder="ABC123" autoCapitalize="characters" autoComplete="off" spellCheck={false}
+          className="font-mono text-lg tracking-[0.3em] uppercase" data-testid="input-kid-family-code"
+        />
+        <p className={cn("text-xs", status === "bad" ? "text-destructive" : "text-muted-foreground")}>
+          {status === "checking" ? <><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />Checking…</>
+            : status === "bad" ? "That code doesn't match a family. Check with your parent."
+            : kids ? `${familyOf}'s family` : "The same code you used to join. Your parent has it."}
+        </p>
+      </div>
+      {kids && (
+        <div className="grid gap-2">
+          <Label>Who's spinning?</Label>
+          {kids.length === 0 ? (
+            <p className="rounded-xl bg-muted p-3 text-sm">No kids have joined yet. Tap Sign up, then "I'm a kid".</p>
+          ) : (
+            <div className="flex flex-wrap gap-2" role="radiogroup">
+              {kids.map((p) => (
+                <button
+                  key={p.id} type="button" role="radio" aria-checked={picked === p.id} onClick={() => setPicked(p.id)}
+                  data-testid={`kid-signin-${p.id}`}
+                  className={cn("flex items-center gap-2 rounded-full border-2 py-1 pl-1 pr-4 font-semibold", picked === p.id ? "border-primary bg-secondary" : "bg-card")}
+                >
+                  <KidAvatar name={p.name} avatar={p.avatar} className="h-9 w-9 text-sm ring-0" /> {p.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {picked && (
+        <div className="grid gap-1.5">
+          <Label htmlFor="kid-pin">Your PIN</Label>
+          <Input
+            id="kid-pin" type="password" inputMode="numeric" autoComplete="current-password" autoFocus value={pin}
+            onChange={(e) => setPin(e.target.value)} className="font-mono text-lg tracking-[0.3em]" data-testid="input-kid-signin-pin"
+          />
+        </div>
+      )}
+      <Button type="submit" size="lg" className="h-12" disabled={busy || !picked || !pin} data-testid="button-kid-login">
+        {busy ? <Loader2 className="animate-spin" /> : "Let's go"}
+      </Button>
+    </form>
   );
 }
 

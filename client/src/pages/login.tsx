@@ -5,7 +5,7 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AuthLayout, KidJoinFields, ParentJoinFields, RolePicker, type ParentJoin, type Role } from "@/components/auth-parts";
+import { AuthLayout, KidJoinFields, KidSignIn, rememberFamilyCode, ParentJoinFields, RolePicker, type ParentJoin, type Role } from "@/components/auth-parts";
 import { GoogleG } from "@/pages/setup";
 import { apiRequest } from "@/lib/queryClient";
 import { errorMessage, type Me } from "@/lib/api";
@@ -20,6 +20,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
+  const [kidSignIn, setKidSignIn] = useState(false);
   const [join, setJoin] = useState<{ code: string; profileId: number | null }>({ code: "", profileId: null });
   const [pjoin, setPjoin] = useState<ParentJoin>({ mode: "new", code: "", valid: true });
   const { data: providers } = useQuery<{ google: boolean }>({ queryKey: ["/api/auth/providers"] });
@@ -43,17 +44,23 @@ export default function LoginPage() {
   const signUp = useMutation({
     mutationFn: () =>
       apiRequest<Me>("POST", "/api/auth/register", {
-        username, password, role, email: role === "parent" ? email : undefined,
+        username: username.trim(), password, role, email: email.trim() || undefined,
         parentCode: role === "child" ? join.code : undefined,
         childProfileId: role === "child" ? join.profileId : undefined,
         guardianCode: role === "parent" && pjoin.mode === "join" ? pjoin.code : undefined,
       }),
-    onSuccess: done,
+    onSuccess: (user) => {
+      if (role === "child") rememberFamilyCode(join.code);
+      done(user);
+    },
     onError: (e) => setError(errorMessage(e)),
   });
 
   const busy = signIn.isPending || signUp.isPending;
-  const canSignUp = username.trim().length >= 3 && password.length >= 6 && (role === "parent" ? pjoin.valid : !!join.profileId);
+  const u = username.trim();
+  const canSignUp = role === "parent"
+    ? u.length >= 3 && password.length >= 6 && pjoin.valid
+    : (u === "" || u.length >= 3) && password.length >= 4 && !!join.profileId;
 
   return (
     <AuthLayout>
@@ -89,7 +96,14 @@ export default function LoginPage() {
         </>
       )}
 
-      {mode === "signin" ? (
+      {mode === "signin" && kidSignIn ? (
+        <div className={cn(!providers?.google && "mt-6")}>
+          <KidSignIn onSignedIn={done} onError={setError} />
+          <button type="button" className="mt-4 w-full text-center text-sm font-semibold text-primary hover:underline" onClick={() => { setKidSignIn(false); setError(""); }} data-testid="button-use-username">
+            Sign in with a username instead
+          </button>
+        </div>
+      ) : mode === "signin" ? (
         <form className={cn("grid gap-4", !providers?.google && "mt-6")} onSubmit={(e) => { e.preventDefault(); setError(""); signIn.mutate(); }}>
           <div className="grid gap-1.5">
             <Label htmlFor="login-username">Username</Label>
@@ -102,26 +116,56 @@ export default function LoginPage() {
           <Button type="submit" size="lg" className="mt-1 h-12" disabled={busy || !username || !password} data-testid="button-login">
             {signIn.isPending ? <Loader2 className="animate-spin" /> : "Sign in"}
           </Button>
-          <p className="text-center text-xs text-muted-foreground">Kid forgot their password? A parent can set a new one from their Home screen.</p>
+          <button type="button" className="text-center text-sm font-semibold text-primary hover:underline" onClick={() => { setKidSignIn(true); setError(""); }} data-testid="button-kid-signin">
+            I'm a kid: sign in with my parent code + PIN
+          </button>
+          <p className="text-center text-xs text-muted-foreground">Kid forgot their password or PIN? A parent can set a new one from their Home screen.</p>
         </form>
       ) : (
         <form className={cn("grid gap-4", !providers?.google && "mt-6")} onSubmit={(e) => { e.preventDefault(); setError(""); if (canSignUp) signUp.mutate(); }}>
           <RolePicker role={role} onChange={setRole} />
           {role === "child" && <KidJoinFields onChange={setJoin} />}
           {role === "parent" && <ParentJoinFields onChange={setPjoin} />}
-          <div className="grid gap-1.5">
-            <Label htmlFor="register-username">Username</Label>
-            <Input id="register-username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="At least 3 characters" />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="register-password">Password</Label>
-            <Input id="register-password" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 6 characters" />
-          </div>
-          {role === "parent" && (
-            <div className="grid gap-1.5">
-              <Label htmlFor="register-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label>
-              <Input id="register-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </div>
+          {role === "child" ? (
+            <>
+              <div className="grid gap-1.5">
+                <Label htmlFor="register-password">Make a secret PIN</Label>
+                <Input
+                  id="register-password" type="password" inputMode="numeric" autoComplete="new-password" value={password}
+                  onChange={(e) => setPassword(e.target.value)} placeholder="4 or more numbers" className="font-mono text-lg tracking-[0.3em]"
+                  data-testid="input-kid-pin"
+                />
+                <p className="text-xs text-muted-foreground">Next time: parent code, tap your name, type your PIN. A password works too.</p>
+              </div>
+              <details className="group rounded-xl border border-border p-3 text-sm">
+                <summary className="cursor-pointer font-semibold text-muted-foreground">More options (optional)</summary>
+                <div className="mt-3 grid gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="register-username">Username <span className="font-normal text-muted-foreground">(we'll make one if blank)</span></Label>
+                    <Input id="register-username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="At least 3 characters" />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="register-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label>
+                    <Input id="register-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                  </div>
+                </div>
+              </details>
+            </>
+          ) : (
+            <>
+              <div className="grid gap-1.5">
+                <Label htmlFor="register-username">Username</Label>
+                <Input id="register-username" autoComplete="username" autoCapitalize="none" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="At least 3 characters" />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="register-password">Password</Label>
+                <Input id="register-password" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 6 characters" />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="register-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label>
+                <Input id="register-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+            </>
           )}
           <Button type="submit" size="lg" className="mt-1 h-12" disabled={busy || !canSignUp} data-testid="button-register">
             {signUp.isPending ? <Loader2 className="animate-spin" /> : role === "parent" ? (pjoin.mode === "join" ? "Join this family" : "Create family account") : "Join my family"}
