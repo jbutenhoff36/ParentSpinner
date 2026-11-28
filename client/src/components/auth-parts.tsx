@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { KidAvatar } from "@/components/kid-avatar";
 import { BrandMark } from "@/components/brand-mark";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { APP_NAME, APP_TAGLINE } from "@/lib/brand";
 import { cn } from "@/lib/utils";
 
@@ -208,7 +209,8 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
         </div>
         <BrandMark className="absolute -bottom-24 -right-24 h-96 w-96 opacity-20" />
       </aside>
-      <main className="flex flex-col items-center justify-center px-5 py-10">
+      <main className="relative flex flex-col items-center justify-center px-5 py-10">
+        <ThemeToggle compact className="absolute right-4 top-4 w-auto" />
         <div className="mb-8 flex flex-col items-center text-center lg:hidden">
           <BrandMark className="h-16 w-16" />
           <p className="mt-3 text-2xl font-extrabold">{APP_NAME}</p>

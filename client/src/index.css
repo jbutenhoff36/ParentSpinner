@@ -36,35 +36,43 @@
     --success-soft: 150 55% 93%;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --background: 234 22% 9%;
-      --foreground: 230 25% 95%;
-      --card: 234 20% 13%;
-      --card-foreground: 230 25% 95%;
-      --popover: 234 20% 14%;
-      --popover-foreground: 230 25% 95%;
-      --primary: 252 90% 70%;
-      --primary-foreground: 234 30% 10%;
-      --secondary: 252 30% 22%;
-      --secondary-foreground: 252 90% 86%;
-      --muted: 234 16% 18%;
-      --muted-foreground: 230 12% 66%;
-      --accent: 252 30% 22%;
-      --accent-foreground: 252 90% 86%;
-      --destructive: 356 75% 60%;
-      --border: 234 14% 22%;
-      --input: 234 14% 26%;
-      --ring: 252 90% 70%;
-      --reward-soft: 38 50% 16%;
-      --chore-soft: 199 45% 16%;
-      --fight-soft: 340 40% 17%;
-      --success-soft: 152 40% 15%;
-      --success: 152 55% 52%;
-      --chore: 199 70% 60%;
-      --fight: 340 80% 66%;
-      color-scheme: dark;
-    }
+  /* Dark theme: deep indigo night, lifted cards, brighter wheel colours.
+     Turned on by the "dark" class on <html> (see lib/theme.ts). */
+  .dark {
+    --background: 245 30% 8%;
+    --foreground: 240 30% 96%;
+    --card: 245 26% 12.5%;
+    --card-foreground: 240 30% 96%;
+    --popover: 245 26% 14%;
+    --popover-foreground: 240 30% 96%;
+    --primary: 252 95% 72%;
+    --primary-foreground: 245 40% 9%;
+    --secondary: 252 38% 22%;
+    --secondary-foreground: 252 100% 88%;
+    --muted: 245 22% 17%;
+    --muted-foreground: 240 14% 70%;
+    --accent: 252 38% 22%;
+    --accent-foreground: 252 100% 88%;
+    --destructive: 356 80% 64%;
+    --destructive-foreground: 245 40% 9%;
+    --border: 245 20% 21%;
+    --input: 245 18% 27%;
+    --ring: 252 95% 72%;
+    --reward: 40 96% 58%;
+    --reward-soft: 38 55% 15%;
+    --chore: 199 80% 62%;
+    --chore-soft: 199 50% 15%;
+    --fight: 340 85% 68%;
+    --fight-soft: 340 45% 16%;
+    --success: 152 58% 54%;
+    --success-soft: 152 42% 14%;
+    color-scheme: dark;
+  }
+
+  .dark body {
+    background-image:
+      radial-gradient(60rem 30rem at 50% -10rem, hsl(252 60% 30% / 0.35), transparent 70%);
+    background-attachment: fixed;
   }
 
   * {
@@ -88,6 +96,9 @@
 @layer components {
   .surface {
     @apply rounded-3xl bg-card text-card-foreground border border-border/70 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-12px_rgba(16,24,40,0.12)];
+  }
+  .dark .surface {
+    @apply border-white/[0.07] shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_10px_30px_-12px_rgba(0,0,0,0.6)];
   }
   .eyebrow {
     @apply text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground;
