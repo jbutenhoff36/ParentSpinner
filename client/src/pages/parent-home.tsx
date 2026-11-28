@@ -7,6 +7,7 @@ import type { ChildProfile, GoodDayLog } from "@shared/schema";
 import { PageHeader } from "@/components/app-shell";
 import ApprovalsInbox from "@/components/ApprovalsInbox";
 import { NotificationsPrompt } from "@/components/notifications-card";
+import { InstallBanner } from "@/components/install-app";
 import { InviteCard } from "@/components/invite-card";
 import { KidAvatar } from "@/components/kid-avatar";
 import { ProgressRing } from "@/components/progress-ring";
@@ -125,6 +126,7 @@ export default function ParentHome({ me }: { me: Me }) {
       </PageHeader>
 
       <ApprovalsInbox />
+      <InstallBanner />
       {kids.length > 0 && <NotificationsPrompt role="parent" />}
 
       <section aria-labelledby="kids-heading">
