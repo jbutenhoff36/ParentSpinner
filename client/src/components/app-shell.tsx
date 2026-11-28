@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { Home, Disc3, ListChecks, Settings2, LogOut, Copy, ChevronDown } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { APP_NAME } from "@/lib/brand";
 import { useMe, useChildren, type Me } from "@/lib/api";
 import { usePendingApprovals } from "@/components/ApprovalsInbox";
@@ -145,6 +146,11 @@ export function AppShell({ me, children }: { me: Me; children: React.ReactNode }
                     <Settings2 /> Setup and account
                   </DropdownMenuItem>
                 )}
+                <div className="px-2 pb-1.5 pt-1">
+                  <p className="mb-1.5 text-xs font-medium text-muted-foreground">Appearance</p>
+                  <ThemeToggle />
+                </div>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout} data-testid="button-logout">
                   <LogOut /> Log out
                 </DropdownMenuItem>
