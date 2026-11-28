@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { playSuccessSound, initAudioSystem, playSpinnerStartSound } from "@/lib/sound-utils";
+import { playSuccessSound, initAudioSystem, playSpinnerStartSound, playWheelTick } from "@/lib/sound-utils";
 import { errorMessage, useChildren, useConfig, TYPE_META, type ConsequenceType, type Me } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -267,13 +267,15 @@ export default function SpinPage({ me }: { me: Me }) {
               onBlocked={explainBlocked}
               onSpinStart={handleSpinStart}
               onSpinEnd={handleSpinEnd}
+              onTick={playWheelTick}
+              onWeakSwipe={() => toast({ title: "Give it a bigger swipe! 💨", description: "Grab the arrow and flick it around to spin." })}
               ariaLabel={`${meta.long} with ${options.length} choices: ${options.map((o) => o.text).join(", ")}`}
             />
           </div>
           <div className="mt-6 w-full max-w-xs md:hidden">
             <SpinButton canSpin={canSpin} spinning={spinning} label={!kid ? "Pick a kid" : needsSpin && spinsLeft <= 0 ? "No spins yet" : "Spin!"} onClick={() => wheelRef.current?.spin()} testId="button-spin-mobile" />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">or tap or swipe the wheel</p>
+          <p className="mt-2 text-xs text-muted-foreground">or grab the arrow and swipe it around</p>
         </div>
       </div>
 
