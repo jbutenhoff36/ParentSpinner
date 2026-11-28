@@ -159,14 +159,14 @@ export function PasswordDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>New password for {kid?.name}</DialogTitle>
+          <DialogTitle>New PIN or password for {kid?.name}</DialogTitle>
           <DialogDescription>For when they forget it. Tell them the new one.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (pw.length >= 4) onSave(pw); }}>
-          <Input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 4 characters" autoFocus data-testid="input-child-password" />
+          <Input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="4+ numbers or characters" autoFocus data-testid="input-child-password" />
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={pw.length < 4 || saving} data-testid="button-save-child-password">{saving ? "Saving…" : "Set password"}</Button>
+            <Button type="submit" disabled={pw.length < 4 || saving} data-testid="button-save-child-password">{saving ? "Saving…" : "Save"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

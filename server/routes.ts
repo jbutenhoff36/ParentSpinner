@@ -67,6 +67,18 @@ function normalizeCode(value: unknown): string {
   return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/** A free username made from a kid's name, like "maya" or "maya42". */
+async function freeKidUsername(name: string): Promise<string> {
+  let base = name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "").slice(0, 20);
+  if (base.length < 3) base = (base + "kid").slice(0, 20);
+  if (!(await storage.getUserByUsername(base))) return base;
+  for (let i = 0; i < 20; i++) {
+    const candidate = `${base}${randomInt(10, i < 10 ? 100 : 10000)}`;
+    if (!(await storage.getUserByUsername(candidate))) return candidate;
+  }
+  throw new HttpError(500, "Couldn't pick a username. Please type one.");
+}
+
 /** Gives a parent a join code if they don't have one yet (retries on the rare clash). */
 async function ensureJoinCode(user: User): Promise<User> {
   if (user.role !== "parent" || user.parentId || user.joinCode) return user;
@@ -103,6 +115,8 @@ function rateLimiter(limit: number, windowMs: number, message: string) {
 
 const loginLimit = rateLimiter(10, 15 * 60 * 1000, "Too many login attempts. Please wait 15 minutes and try again.");
 const registerLimit = rateLimiter(20, 60 * 60 * 1000, "Too many sign-ups from this device. Please try again later.");
+/** Caps PIN guesses per kid profile from all devices together. */
+const kidPinLimit = rateLimiter(20, 15 * 60 * 1000, "Too many tries. Please wait 15 minutes, or ask a parent to reset your PIN.");
 const codeLimit = rateLimiter(30, 15 * 60 * 1000, "Too many code checks. Please wait a few minutes and try again.");
 
 function publicUser(user: User) {
@@ -317,8 +331,9 @@ const avatarSchema = z.string().max(400_000, "That picture is too large")
 const typeSchema = z.enum(["good", "bad", "fighting"]);
 
 const registerSchema = z.object({
-  username: z.string().trim().min(3, "Username must be at least 3 characters").max(50),
-  password: z.string().min(4, "Password must be at least 4 characters").max(200),
+  // Kids joining with a family code may skip the username: one is made from their name.
+  username: z.string().trim().min(3, "Username must be at least 3 characters").max(50).optional().or(z.literal("")),
+  password: z.string().min(4, "Password or PIN must be at least 4 characters").max(200),
   role: z.enum(["parent", "child"]).default("parent"),
   parentCode: z.string().optional().nullable(),
   childProfileId: z.union([z.string(), z.number()]).optional().nullable(),
@@ -404,7 +419,13 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
   app.post("/api/auth/register", wrap(async (req, res) => {
     registerLimit(req.ip || "unknown");
     const data = body(registerSchema, req.body);
-    const user = await createAccount(req, { ...data, passwordHash: await hashPassword(data.password) });
+    let username = data.username || "";
+    if (!username) {
+      if (data.role !== "child") throw new HttpError(400, "Username must be at least 3 characters");
+      const profile = data.childProfileId ? await storage.getChildProfile(Number(data.childProfileId)) : undefined;
+      username = await freeKidUsername(profile?.name || "kid");
+    }
+    const user = await createAccount(req, { ...data, username, passwordHash: await hashPassword(data.password) });
     res.status(201).json(publicUser(user));
   }));
 
@@ -574,6 +595,46 @@ export async function registerRoutes(app: Express, sessionMiddleware: RequestHan
       parentUsername: parent.username,
       unlinkedChildProfiles: unlinked.map((c) => ({ id: c.id, name: c.name, avatar: c.avatar })),
     });
+  }));
+
+  /** Kids in a family who already have a login (for "sign in with family code"). */
+  app.get("/api/auth/family-kids", wrap(async (req, res) => {
+    codeLimit(req.ip || "unknown");
+    const code = normalizeCode(req.query.code);
+    const parent = code.length === 6 ? await storage.getParentByJoinCode(code) : undefined;
+    if (!parent) throw new HttpError(404, "That code doesn't match a family");
+    const kids = (await storage.getChildProfiles(parent.id)).filter((c) => c.childUserId);
+    res.json({
+      familyOf: parent.displayName || parent.username,
+      kids: kids.map((c) => ({ id: c.id, name: c.name, avatar: c.avatar })),
+    });
+  }));
+
+  /** Kid sign-in with family code + "which one are you" + PIN (their password). */
+  app.post("/api/auth/kid-login", wrap(async (req, res) => {
+    const data = body(z.object({
+      code: z.string().min(1, "Enter your family code"),
+      childProfileId: z.coerce.number().int().positive("Pick your name"),
+      pin: z.string().min(1, "Enter your PIN"),
+    }), req.body);
+    loginLimit(`${req.ip}|kid:${data.childProfileId}`);
+    kidPinLimit(String(data.childProfileId));
+    const parent = await storage.getParentByJoinCode(normalizeCode(data.code));
+    const profile = await storage.getChildProfile(data.childProfileId);
+    if (!parent || !profile || profile.userId !== parent.id || !profile.childUserId) {
+      throw new HttpError(401, "Wrong parent code or PIN");
+    }
+    const user = await storage.getUser(profile.childUserId);
+    if (!user || user.role !== "child") throw new HttpError(401, "Wrong parent code or PIN");
+    if (!user.password) {
+      throw new HttpError(401, "This account uses Sign in with Google. Tap \"Continue with Google\" instead.");
+    }
+    if (!(await verifyPassword(data.pin, user.password))) throw new HttpError(401, "Wrong parent code or PIN");
+    const updates: Partial<User> = { lastLogin: new Date() };
+    if (!user.password.startsWith("scrypt:")) updates.password = await hashPassword(data.pin);
+    const updated = (await storage.updateUser(user.id, updates)) || user;
+    await startSession(req, user.id);
+    res.json(publicUser(updated));
   }));
 
   app.get("/api/auth/verify-guardian-code", wrap(async (req, res) => {

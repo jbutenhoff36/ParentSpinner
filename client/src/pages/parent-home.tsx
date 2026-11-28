@@ -103,7 +103,7 @@ export default function ParentHome({ me }: { me: Me }) {
     mutationFn: ({ kid, password }: { kid: ChildProfile; password: string }) => apiRequest("POST", `/api/children/${kid.id}/password`, { password }),
     onSuccess: (_r, { kid }) => {
       close();
-      toast({ title: "Password set", description: `${kid.name} can sign in with the new password.` });
+      toast({ title: "Password set", description: `${kid.name} can sign in with the new PIN or password.` });
     },
     onError: (e) => toast({ title: "Couldn't set password", description: errorMessage(e), variant: "destructive" }),
   });
@@ -254,7 +254,7 @@ function KidCard({
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuItem onClick={() => onMenu("edit")}><Pencil /> Edit name or photo</DropdownMenuItem>
             <DropdownMenuItem onClick={() => onMenu("stats")} data-testid={`button-edit-stats-${kid.id}`}><SlidersHorizontal /> Adjust counts</DropdownMenuItem>
-            {kid.childUserId && <DropdownMenuItem onClick={() => onMenu("password")} data-testid={`button-set-password-${kid.id}`}><KeyRound /> Set their password</DropdownMenuItem>}
+            {kid.childUserId && <DropdownMenuItem onClick={() => onMenu("password")} data-testid={`button-set-password-${kid.id}`}><KeyRound /> Reset PIN or password</DropdownMenuItem>}
             <DropdownMenuItem onClick={() => onMenu("badday")} data-testid={`button-bad-day-${kid.id}`}><CloudRain /> Bad day: start count over</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => onMenu("remove")} className="text-destructive focus:text-destructive"><Trash2 /> Remove</DropdownMenuItem>
